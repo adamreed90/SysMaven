@@ -1,6 +1,8 @@
 # 🌟 **SysMaven**  
 **Empowering IT Mastery**  
 
+![SysMaven Logo](SysMaven.webp)
+
 Welcome to **SysMaven**, the ultimate platform for managing IT systems and assets end-to-end. Designed for small IT teams and SMBs, SysMaven simplifies imaging, patching, and provisioning tasks while providing full control over your IT environment. Built on the robust .NET 8+ framework, it's a tool you can trust.  
 
 ---
