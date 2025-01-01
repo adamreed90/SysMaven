@@ -1,0 +1,378 @@
+# Alpine Linux Network Boot Image Build Guide
+
+## Prerequisites
+
+- Ubuntu/Debian-based system for building
+- Root/sudo access
+- At least 4GB free disk space
+- Internet connection for downloading packages
+
+## 1. Set Up Build Environment
+
+```bash
+# Install required packages
+sudo apt-get update
+sudo apt-get install -y \
+    squashfs-tools \
+    xorriso \
+    wget \
+    syslinux \
+    isolinux \
+    grub-efi-amd64-bin \
+    mtools
+
+# Create working directory
+mkdir alpine-custom
+cd alpine-custom
+```
+
+## 2. Download Alpine Linux Base
+
+```bash
+# Download latest Alpine Linux minirootfs
+ALPINE_VERSION="3.21"
+wget https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/x86_64/alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz
+
+# Create work directory and extract
+mkdir custom-rootfs
+cd custom-rootfs
+sudo tar xzf ../alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz
+```
+
+## 3. Prepare chroot Environment
+
+```bash
+# Copy resolv.conf for network access during chroot
+sudo cp /etc/resolv.conf etc/
+
+# Mount necessary filesystems
+sudo mount -t proc none proc
+sudo mount -t sysfs none sys
+sudo mount -t devtmpfs none dev
+
+# Enter chroot with sh (Alpine's default shell)
+sudo chroot . /bin/sh
+```
+
+## 4. Configure System
+
+```bash
+# Inside chroot environment
+
+# Configure repositories
+cat > /etc/apk/repositories << EOF
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community
+EOF
+
+# Update and add bash
+apk update
+apk add bash
+
+# Install necessary packages
+apk add --no-cache \
+    alpine-base \
+    linux-lts \
+    icu \
+    krb5-libs \
+    libgcc \
+    libintl \
+    libssl3 \
+    libstdc++ \
+    zlib \
+    busybox-extras \
+    nfs-utils \
+    partclone \
+    parted \
+    e2fsprogs \
+    e2fsprogs-extra \
+    ntfs-3g \
+    ntfs-3g-progs \
+    dosfstools \
+    hdparm \
+    smartmontools \
+    lsblk \
+    util-linux \
+    udev \
+    pciutils \
+    usbutils \
+    rsync \
+    ddrescue \
+    gptfdisk \
+    sfdisk \
+    dmidecode \
+    tar \
+    gzip \
+    xz \
+    lshw \
+    nvme-cli \
+    fio \
+    ipmitool \
+    lm-sensors \
+    ethtool \
+    memtester \
+    stress-ng \
+    sysstat \
+    strace \
+    ltrace
+
+# Install .NET 8.0 Runtime
+wget https://dot.net/v1/dotnet-install.sh
+chmod +x dotnet-install.sh
+./dotnet-install.sh --runtime dotnet --channel 8.0 --install-dir /usr/share/dotnet
+ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
+
+# Install mkinitfs and generate initramfs
+apk add mkinitfs
+KERNEL_VERSION=$(ls /lib/modules)
+echo "Installing kernel version: $KERNEL_VERSION"
+
+# Ensure proper initramfs generation
+cat > /etc/mkinitfs/mkinitfs.conf << EOF
+features="ata base cdrom squashfs ext4 mmc scsi usb virtio network dhcp"
+EOF
+
+# Generate initramfs explicitly
+mkinitfs -n -b /boot -k $KERNEL_VERSION
+ls -l /boot/initramfs-* || echo "Warning: initramfs not found!"
+
+# Create service user
+adduser -D -h /opt/imaging-service imaging-service
+mkdir -p /opt/imaging-service
+
+# Create service startup script
+cat > /etc/init.d/imaging-service << 'EOF'
+#!/sbin/openrc-run
+
+name="imaging-service"
+description="Imaging Service"
+command="/usr/bin/dotnet"
+command_args="/opt/imaging-service/ImagingService.dll"
+directory="/opt/imaging-service"
+user="imaging-service"
+group="imaging-service"
+pidfile="/run/${RC_SVCNAME}.pid"
+start_stop_daemon_args="--background --make-pidfile"
+
+depend() {
+    need net
+    after net
+}
+EOF
+
+chmod +x /etc/init.d/imaging-service
+rc-update add imaging-service default
+
+# Configure serial console for headless operation
+cat > /etc/inittab << EOF
+# System initialization
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+
+# Set up getty on serial console
+ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+
+# Trap CTRL-ALT-DELETE
+::ctrlaltdel:/sbin/reboot
+
+# Shutdown
+::shutdown:/sbin/openrc shutdown
+EOF
+
+# Verify kernel and initramfs before exiting chroot
+echo "Verifying boot files:"
+ls -l /boot/vmlinuz-lts /boot/initramfs-*
+
+# Exit chroot
+exit
+```
+
+## 5. Clean Up and Unmount
+
+```bash
+# Unmount virtual filesystems
+cd ..
+sudo umount -l custom-rootfs/dev
+sudo umount -l custom-rootfs/proc
+sudo umount -l custom-rootfs/sys
+
+# Remove unnecessary files
+cd custom-rootfs
+sudo rm -rf \
+    usr/share/man/* \
+    usr/share/doc/* \
+    usr/share/info/* \
+    usr/share/i18n/* \
+    usr/share/locale/* \
+    usr/share/zoneinfo/* \
+    var/cache/apk/* \
+    var/cache/misc/* \
+    var/log/* \
+    tmp/*
+
+cd ..
+```
+
+## 6. Create Boot Images
+
+```bash
+# Create squashfs image with optimized compression
+sudo mksquashfs custom-rootfs alpine-custom.squashfs -comp xz -Xbcj x86 -Xdict-size 1M -b 1M -no-exports -no-recovery -always-use-fragments
+
+# Create directory structure for ISO
+mkdir -p iso/boot/syslinux
+mkdir -p iso/boot/grub
+mkdir -p iso/EFI/BOOT
+mkdir -p iso/apks
+
+# Verify and copy boot files
+KERNEL_VERSION=$(ls custom-rootfs/lib/modules)
+echo "Using kernel version: $KERNEL_VERSION"
+
+# Copy boot files with verification
+if [ ! -f custom-rootfs/boot/vmlinuz-lts ]; then
+    echo "Error: vmlinuz-lts not found!"
+    exit 1
+fi
+
+if [ ! -f custom-rootfs/boot/initramfs-$KERNEL_VERSION ]; then
+    echo "Error: initramfs not found!"
+    exit 1
+fi
+
+sudo cp custom-rootfs/boot/vmlinuz-lts iso/boot/
+sudo cp custom-rootfs/boot/initramfs-$KERNEL_VERSION iso/boot/initramfs-lts
+cp alpine-custom.squashfs iso/boot/
+
+# Copy BIOS boot files
+sudo cp /usr/lib/ISOLINUX/isolinux.bin iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/ldlinux.c32 iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/libcom32.c32 iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/libutil.c32 iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/vesamenu.c32 iso/boot/syslinux/
+
+# Create syslinux configuration (BIOS)
+cat > iso/boot/syslinux/syslinux.cfg << EOF
+TIMEOUT 20
+PROMPT 1
+DEFAULT custom_alpine
+
+LABEL custom_alpine
+    MENU LABEL Custom Alpine Linux
+    KERNEL /boot/vmlinuz-lts
+    INITRD /boot/initramfs-lts
+    APPEND root=/dev/ram0 console=tty0 console=ttyS0,115200n8 nomodeset quiet modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0
+EOF
+
+# Create GRUB configuration (UEFI)
+cat > iso/boot/grub/grub.cfg << EOF
+set timeout=20
+set default=0
+
+menuentry "Custom Alpine Linux" {
+    linux /boot/vmlinuz-lts root=/dev/ram0 console=tty0 console=ttyS0,115200n8 nomodeset quiet modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0
+    initrd /boot/initramfs-lts
+}
+EOF
+
+# Create UEFI boot loader
+grub-mkstandalone \
+    --format=x86_64-efi \
+    --output=iso/EFI/BOOT/BOOTX64.EFI \
+    --locales="" \
+    --fonts="" \
+    "boot/grub/grub.cfg=iso/boot/grub/grub.cfg"
+
+# Create UEFI boot disk image
+dd if=/dev/zero of=iso/boot/efiboot.img bs=1M count=4
+mkfs.vfat iso/boot/efiboot.img
+LC_ALL=C mmd -i iso/boot/efiboot.img ::/EFI
+LC_ALL=C mmd -i iso/boot/efiboot.img ::/EFI/BOOT
+LC_ALL=C mcopy -i iso/boot/efiboot.img iso/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
+
+# Create hybrid ISO (BIOS + UEFI)
+sudo xorriso -as mkisofs \
+    -o alpine-custom.iso \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "ALPINE_CUSTOM" \
+    -eltorito-boot boot/syslinux/isolinux.bin \
+    -eltorito-catalog boot/syslinux/boot.cat \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -eltorito-alt-boot \
+    -e boot/efiboot.img \
+    -no-emul-boot \
+    -isohybrid-gpt-basdat \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+    iso/
+
+echo "Verifying created ISO file:"
+ls -lh alpine-custom.iso
+```
+
+## 7. iPXE Boot Configuration
+
+Configure your iPXE server to serve this script:
+
+```
+#!ipxe
+
+# Network configuration
+dhcp
+set ipaddr ${net0/ip}
+
+# Report boot status to control service (optional)
+chain --timeout 5000 http://your-control-service/api/boot-status?ip=${ipaddr} || goto boot
+
+:boot
+# Boot the kernel and initramfs with squashfs
+kernel http://your-image-server/vmlinuz-lts root=/dev/ram0 ip=dhcp \
+    console=tty0 console=ttyS0,115200n8 \
+    nomodeset panic=30 quiet loglevel=3 ipv6.disable=1 \
+    modloop=http://your-image-server/alpine-custom.squashfs \
+    modules=loop,squashfs alpine_dev=loop0
+initrd http://your-image-server/initramfs-lts
+boot
+```
+
+## 8. For Rebuilds
+
+Before rebuilding the image:
+
+```bash
+# Ensure nothing is mounted
+sudo umount -l custom-rootfs/dev || true
+sudo umount -l custom-rootfs/proc || true
+sudo umount -l custom-rootfs/sys || true
+
+# Remove previous build artifacts
+sudo rm -f alpine-custom.squashfs
+sudo rm -f alpine-custom.iso
+
+# Clean temporary directories
+sudo rm -rf custom-rootfs/var/cache/*
+sudo rm -rf custom-rootfs/var/log/*
+sudo rm -rf custom-rootfs/var/tmp/*
+sudo rm -rf custom-rootfs/tmp/*
+sudo rm -rf custom-rootfs/run/*
+```
+
+## Troubleshooting
+
+1. If initramfs is not generated:
+   - Inside chroot, check kernel version: `ls /lib/modules/`
+   - Verify mkinitfs is installed: `apk info mkinitfs`
+   - Manually generate: `mkinitfs -n -b /boot -k $(ls /lib/modules)`
+
+2. If boot files are missing:
+   - Check paths: `ls -l /boot/`
+   - Ensure linux-lts package is installed: `apk info linux-lts`
+   - Verify kernel symlinks: `ls -l /boot/vmlinuz*`
+
+3. If ISO fails to boot:
+   - Check isolinux.bin and other BIOS files are present
+   - Verify UEFI boot loader was created
+   - Ensure all paths in syslinux.cfg and grub.cfg are correct
+
+Remember to replace "your-image-server" and "your-control-service" with actual server addresses in the iPXE configuration.
