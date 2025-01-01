@@ -202,9 +202,9 @@ mkdir -p iso/boot/syslinux
 mkdir -p iso/apks
 
 # Copy boot files
-cp bootfiles/vmlinuz-lts iso/boot/
-cp bootfiles/initramfs-lts iso/boot/
-cp alpine-custom.squashfs iso/boot/
+sudo cp bootfiles/vmlinuz-lts iso/boot/
+sudo cp bootfiles/initramfs-lts iso/boot/
+sudo cp alpine-custom.squashfs iso/boot/
 
 # Install syslinux for ISO creation
 sudo apt-get install -y syslinux isolinux
