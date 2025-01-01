@@ -267,7 +267,7 @@ sudo xorriso -as mkisofs \
     -eltorito-catalog boot/syslinux/boot.cat \
     -no-emul-boot -boot-load-size 4 -boot-info-table \
     -eltorito-alt-boot \
-    -e /boot/efiboot.img \
+    -e boot/efiboot.img \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
