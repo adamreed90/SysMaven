@@ -195,9 +195,51 @@ kernel/drivers/net/*
 kernel/net/*
 EOF
 
-# Create initramfs-lts with network boot support
-echo "Creating initramfs-lts with network support..."
+# Create chroot script
+cat > "custom-rootfs/chroot-script.sh" << 'EOF'
+#!/bin/sh
+set -e
+
+# Configure repositories
+cat > /etc/apk/repositories << REPO
+https://dl-cdn.alpinelinux.org/alpine/v3.21/main
+https://dl-cdn.alpinelinux.org/alpine/v3.21/community
+REPO
+
+# Update and install base packages
+apk update
+apk add mkinitfs linux-lts
+
+# Configure mkinitfs with additional required features
+mkdir -p /etc/mkinitfs/features.d
+cat > /etc/mkinitfs/features.d/netboot.modules << NETBOOT
+kernel/drivers/net/ethernet/*
+kernel/drivers/net/phy/*
+kernel/drivers/net/*
+kernel/net/*
+NETBOOT
+
+# Get kernel version and create initramfs
+KERNEL_VERSION=$(ls /lib/modules)
+echo "Creating initramfs-lts with network support for kernel $KERNEL_VERSION..."
 mkinitfs -n -o /boot/initramfs-lts $KERNEL_VERSION
+
+# Verify initramfs creation
+if [ ! -f /boot/initramfs-lts ]; then
+    echo "Failed to create initramfs-lts"
+    exit 1
+fi
+
+# Show resulting files
+ls -lh /boot/
+EOF
+
+# Make chroot script executable
+chmod +x "custom-rootfs/chroot-script.sh"
+
+# Execute chroot script
+log "Executing chroot script..."
+chroot "custom-rootfs" /chroot-script.sh
 
 # Verify initramfs creation
 if [ ! -f /boot/initramfs-lts ]; then
