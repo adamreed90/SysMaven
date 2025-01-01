@@ -129,10 +129,15 @@ apk add --no-cache \
     ltrace
 
 # Install .NET 8.0 Runtime
-wget https://dot.net/v1/dotnet-install.sh
-chmod +x dotnet-install.sh
-./dotnet-install.sh --runtime dotnet --channel 8.0 --install-dir /usr/share/dotnet
+apk add --no-cache icu-libs krb5-libs libgcc libintl libssl1.1 zlib
+mkdir -p /usr/share/dotnet
+cd /usr/share/dotnet
+DOTNET_VERSION="8.0.11"
+wget -q https://dotnetcli.azureedge.net/dotnet/Runtime/${DOTNET_VERSION}/dotnet-runtime-${DOTNET_VERSION}-linux-musl-x64.tar.gz
+tar xzf dotnet-runtime-${DOTNET_VERSION}-linux-musl-x64.tar.gz
+rm dotnet-runtime-${DOTNET_VERSION}-linux-musl-x64.tar.gz
 ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
+cd /
 
 # Install mkinitfs and configure
 apk add mkinitfs
@@ -144,21 +149,35 @@ cat > /etc/mkinitfs/mkinitfs.conf << MKINITFS
 features="ata base cdrom squashfs ext4 mmc scsi usb virtio network dhcp"
 MKINITFS
 
-# Generate initramfs
-mkinitfs -n $KERNEL_VERSION
+# Generate initramfs explicitly for the LTS kernel
+KERNEL_VERSION=$(ls /lib/modules)
+echo "Generating initramfs for kernel version: $KERNEL_VERSION"
 
-# Ensure we have the correct initramfs
+# Configure mkinitfs with additional required features
+cat > /etc/mkinitfs/features.d/netboot.modules << EOF
+kernel/drivers/net/ethernet/*
+kernel/drivers/net/phy/*
+kernel/drivers/net/*
+kernel/net/*
+EOF
+
+# Create initramfs-lts with network boot support
+echo "Creating initramfs-lts with network support..."
+mkinitfs -n -o /boot/initramfs-lts $KERNEL_VERSION
+
+# Verify initramfs creation
+if [ ! -f /boot/initramfs-lts ]; then
+    echo "Failed to create initramfs-lts, attempting fallback method..."
+    mkinitfs -n -o /boot/initramfs-lts
+fi
+
+# Check final initramfs size
 if [ -f /boot/initramfs-lts ]; then
-    echo "Using existing initramfs-lts"
-elif [ -f /boot/initramfs-$KERNEL_VERSION ]; then
-    echo "Copying kernel-specific initramfs to initramfs-lts"
-    cp /boot/initramfs-$KERNEL_VERSION /boot/initramfs-lts
-elif [ -f /boot/initramfs-generic ]; then
-    echo "Using generic initramfs as initramfs-lts"
-    cp /boot/initramfs-generic /boot/initramfs-lts
+    echo "Verifying initramfs-lts size:"
+    ls -lh /boot/initramfs-lts
 else
-    echo "No suitable initramfs found, attempting to generate directly"
-    mkinitfs -n -o /boot/initramfs-lts $KERNEL_VERSION
+    echo "ERROR: Failed to create initramfs-lts"
+    exit 1
 fi
 
 # Create service user
