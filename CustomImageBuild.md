@@ -1,9 +1,4 @@
-# Minimal Alpine Linux Network Boot Image Build Guide
-
-## Prerequisites
-- Ubuntu 22.04 host system
-- Root or sudo access
-- Internet connection
+# Complete Alpine Linux Network Boot Image Build Guide
 
 ## 1. Set Up Build Environment
 
@@ -33,7 +28,7 @@ cd custom-rootfs
 sudo tar xzf ../alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz
 ```
 
-## 3. Prepare chroot Environment
+## 3. Prepare and Enter chroot Environment
 
 ```bash
 # Copy resolv.conf for network access during chroot
@@ -48,7 +43,7 @@ sudo mount -t devtmpfs none dev
 sudo chroot . /bin/sh
 ```
 
-## 4. Configure System
+## 4. Configure System in chroot
 
 ```bash
 # Configure repositories
@@ -62,7 +57,7 @@ EOF
 apk update
 apk add bash
 
-# Install all necessary packages
+# Now install all necessary packages
 apk add --no-cache \
     alpine-base \
     icu \
@@ -162,9 +157,15 @@ EOF
 exit
 ```
 
-## 5. Clean Up and Optimize Image
+## 5. Clean Up and Unmount
 
 ```bash
+# Ensure proper unmounting of virtual filesystems
+cd ..
+sudo umount -l custom-rootfs/dev
+sudo umount -l custom-rootfs/proc
+sudo umount -l custom-rootfs/sys
+
 # Remove unnecessary files
 cd custom-rootfs
 sudo rm -rf \
@@ -179,19 +180,13 @@ sudo rm -rf \
     var/log/* \
     tmp/*
 
-# Optionally remove language files if not needed
-sudo rm -rf usr/share/locale/*
-
-# Clear any temp files
-sudo find . -name '*.pyc' -delete
-sudo find . -name '*.pyo' -delete
-sudo find . -name '*__pycache__*' -delete
+cd ..
+```
 
 ## 6. Create Network Boot Image
 
 ```bash
 # Create squashfs image with optimized compression
-cd ..
 sudo mksquashfs custom-rootfs alpine-custom.squashfs -comp xz -Xbcj x86 -Xdict-size 1M -b 1M -no-exports -no-recovery -always-use-fragments
 
 # Copy kernel and create initial ramdisk
@@ -200,32 +195,9 @@ cp custom-rootfs/boot/vmlinuz-lts bootfiles/
 cp custom-rootfs/boot/initramfs-lts bootfiles/
 ```
 
-## 6. Network Boot Process and Configuration
+## 7. iPXE Boot Configuration
 
-### Boot Process Overview
-
-1. **Initial PXE Boot**:
-   - System BIOS/UEFI starts PXE boot
-   - DHCP server provides network configuration and points to iPXE binary
-   - iPXE binary is loaded and executed
-
-2. **iPXE Script Execution**:
-   - iPXE requests script from your control service
-   - Script initiates download of kernel, initramfs, and eventually squashfs
-
-3. **Kernel and Initramfs Boot**:
-   - Kernel starts with specified parameters
-   - Initramfs creates initial runtime environment
-   - Network is initialized using DHCP
-   - Squashfs download and mount process begins
-
-4. **Root Filesystem Setup**:
-   - Initramfs downloads squashfs image using HTTP
-   - Creates RAM disk and mounts squashfs
-   - Switches root to the mounted squashfs
-   - Continues boot process from squashfs
-
-### iPXE Script Configuration
+Create an iPXE script that your service will serve:
 
 ```
 #!ipxe
@@ -248,90 +220,25 @@ initrd http://your-image-server/initramfs-custom
 boot
 ```
 
-### Key Boot Parameters Explained
+## 8. For Rebuilds
 
-- `root=/dev/ram0`: Initial root filesystem is in RAM
-- `ip=dhcp`: Configure network via DHCP
-- `console=`: Configure both VGA and serial console output
-- `modloop=`: URL of the squashfs image to download
-- `modules=loop,squashfs`: Required kernel modules for mounting squashfs
-- `alpine_dev=loop0`: Device to mount the squashfs on
-- `nomodeset`: Prevents video mode changes
-- `panic=30`: Reboot after 30 seconds if kernel panic
-- `quiet loglevel=3`: Reduce boot messages
-- `ipv6.disable=1`: Speed up network configuration
+Before rebuilding the image:
 
-### Required HTTP Server Files
+```bash
+# Ensure nothing is mounted
+sudo umount -l custom-rootfs/dev || true
+sudo umount -l custom-rootfs/proc || true
+sudo umount -l custom-rootfs/sys || true
 
-Your HTTP server (your-image-server) must serve:
+# Remove previous build artifacts
+sudo rm -f alpine-custom.squashfs
+
+# Clean temporary directories
+sudo rm -rf custom-rootfs/var/cache/*
+sudo rm -rf custom-rootfs/var/log/*
+sudo rm -rf custom-rootfs/var/tmp/*
+sudo rm -rf custom-rootfs/tmp/*
+sudo rm -rf custom-rootfs/run/*
 ```
-/vmlinuz-lts           # The Linux kernel
-/initramfs-custom      # The initial RAM filesystem
-/alpine-custom.squashfs # Our custom system image
-```
 
-### Error Handling
-
-The boot process includes several fallback mechanisms:
-
-1. **Network Issues**:
-   - DHCP timeout/retry is handled by iPXE
-   - Multiple network interface support available via `ip=` parameter
-
-2. **Download Failures**:
-   - initramfs will retry downloads with exponential backoff
-   - Kernel panic will trigger reboot after timeout
-
-3. **Mount Failures**:
-   - Failed squashfs mount drops to recovery shell
-   - Network remains configured for manual intervention
-
-### Monitoring Boot Process
-
-You can monitor the boot process through:
-
-1. **Serial Console Output**:
-   - All boot messages appear on configured serial port
-   - Critical errors are logged to both console outputs
-
-2. **Network Status**:
-   - Optional status reporting to control service
-   - DHCP server logs client acquisition
-   - HTTP server logs file downloads
-
-### Boot Flow Sequence
-
-1. System powers on
-2. PXE ROM loads iPXE
-3. iPXE loads script from your control service
-4. Kernel and initramfs download begins
-5. Kernel starts, initramfs loaded
-6. Network configuration via DHCP
-7. Squashfs download begins
-8. RAM disk created
-9. Squashfs mounted
-10. Root switched to squashfs
-11. System services start
-12. .NET service launches
-
-To troubleshoot boot issues, you can:
-1. Add `debug` to kernel parameters for verbose output
-2. Remove `quiet` for more boot messages
-3. Monitor serial console output
-4. Check HTTP server logs for download completion
-
-## Final Steps
-
-1. Deploy your compiled .NET service to `/opt/imaging-service/` in the image
-2. Host the following files on your HTTP server:
-   - vmlinuz-lts
-   - initramfs-custom
-   - alpine-custom.squashfs
-
-## Notes
-
-- The system is configured for minimal footprint
-- All disk operations, NFS mounting, etc. will be handled by the .NET service
-- Serial console is configured for headless operation
-- IPv6 is disabled to speed up network boot
-- The system will automatically start the .NET service after network initialization
+Then proceed with the build process from step 3 (mounting and chroot).
