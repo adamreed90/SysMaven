@@ -1,4 +1,4 @@
-# Complete Alpine Linux Network Boot Image Build Guide
+# Alpine Linux Network Boot Image Build Guide
 
 ## 1. Set Up Build Environment
 
@@ -10,7 +10,9 @@ sudo apt-get install -y \
     xorriso \
     wget \
     syslinux \
-    isolinux
+    isolinux \
+    grub-efi-amd64-bin \
+    mtools
 
 # Create working directory
 mkdir alpine-custom
@@ -24,13 +26,13 @@ cd alpine-custom
 ALPINE_VERSION="3.21"
 wget https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/x86_64/alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz
 
-# Create a work directory and extract
+# Create work directory and extract
 mkdir custom-rootfs
 cd custom-rootfs
 sudo tar xzf ../alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz
 ```
 
-## 3. Prepare and Enter chroot Environment
+## 3. Prepare chroot Environment
 
 ```bash
 # Copy resolv.conf for network access during chroot
@@ -45,7 +47,7 @@ sudo mount -t devtmpfs none dev
 sudo chroot . /bin/sh
 ```
 
-## 4. Configure System in chroot
+## 4. Configure System
 
 ```bash
 # Configure repositories
@@ -59,7 +61,7 @@ EOF
 apk update
 apk add bash
 
-# Now install all necessary packages
+# Install all necessary packages
 apk add --no-cache \
     alpine-base \
     linux-lts \
@@ -163,7 +165,7 @@ exit
 ## 5. Clean Up and Unmount
 
 ```bash
-# Ensure proper unmounting of virtual filesystems
+# Unmount virtual filesystems
 cd ..
 sudo umount -l custom-rootfs/dev
 sudo umount -l custom-rootfs/proc
@@ -192,24 +194,16 @@ cd ..
 # Create squashfs image with optimized compression
 sudo mksquashfs custom-rootfs alpine-custom.squashfs -comp xz -Xbcj x86 -Xdict-size 1M -b 1M -no-exports -no-recovery -always-use-fragments
 
-# Copy kernel and create initial ramdisk
-mkdir -p bootfiles
-sudo cp custom-rootfs/boot/vmlinuz-lts bootfiles/
-sudo cp custom-rootfs/boot/initramfs-lts bootfiles/
-
-# Create ISO directory structure
+# Create directory structure for ISO
 mkdir -p iso/boot/syslinux
 mkdir -p iso/boot/grub
 mkdir -p iso/EFI/BOOT
 mkdir -p iso/apks
 
 # Copy boot files
-sudo cp bootfiles/vmlinuz-lts iso/boot/
-sudo cp bootfiles/initramfs-lts iso/boot/
-sudo cp alpine-custom.squashfs iso/boot/
-
-# Install required packages for ISO creation
-sudo apt-get install -y syslinux isolinux grub-efi-amd64-bin mtools syslinux-tools
+cp custom-rootfs/boot/vmlinuz-lts iso/boot/
+cp custom-rootfs/boot/initramfs-lts iso/boot/
+cp alpine-custom.squashfs iso/boot/
 
 # Copy BIOS boot files
 sudo cp /usr/lib/ISOLINUX/isolinux.bin iso/boot/syslinux/
@@ -250,14 +244,14 @@ grub-mkstandalone \
     --fonts="" \
     "boot/grub/grub.cfg=iso/boot/grub/grub.cfg"
 
-# Create FAT16 UEFI boot disk image
-dd if=/dev/zero of=efiboot.img bs=1M count=4
-mkfs.vfat efiboot.img
-mmd -i efiboot.img ::/EFI
-mmd -i efiboot.img ::/EFI/BOOT
-mcopy -i efiboot.img iso/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
+# Create UEFI boot disk image
+dd if=/dev/zero of=iso/boot/efiboot.img bs=1M count=4
+mkfs.vfat iso/boot/efiboot.img
+LC_ALL=C mmd -i iso/boot/efiboot.img ::/EFI
+LC_ALL=C mmd -i iso/boot/efiboot.img ::/EFI/BOOT
+LC_ALL=C mcopy -i iso/boot/efiboot.img iso/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 
-# Create ISO with both BIOS and UEFI support
+# Create hybrid ISO (BIOS + UEFI)
 sudo xorriso -as mkisofs \
     -o alpine-custom.iso \
     -iso-level 3 \
@@ -272,18 +266,11 @@ sudo xorriso -as mkisofs \
     -isohybrid-gpt-basdat \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
     iso/
-
-# Create UEFI boot disk image
-dd if=/dev/zero of=iso/boot/efiboot.img bs=1M count=4
-mkfs.vfat iso/boot/efiboot.img
-mmd -i iso/boot/efiboot.img ::/EFI
-mmd -i iso/boot/efiboot.img ::/EFI/BOOT
-mcopy -i iso/boot/efiboot.img iso/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 ```
 
 ## 7. iPXE Boot Configuration
 
-Create an iPXE script that your service will serve:
+Configure your iPXE server to serve this script:
 
 ```
 #!ipxe
@@ -302,7 +289,7 @@ kernel http://your-image-server/vmlinuz-lts root=/dev/ram0 ip=dhcp \
     nomodeset panic=30 quiet loglevel=3 ipv6.disable=1 \
     modloop=http://your-image-server/alpine-custom.squashfs \
     modules=loop,squashfs alpine_dev=loop0
-initrd http://your-image-server/initramfs-custom
+initrd http://your-image-server/initramfs-lts
 boot
 ```
 
@@ -318,6 +305,7 @@ sudo umount -l custom-rootfs/sys || true
 
 # Remove previous build artifacts
 sudo rm -f alpine-custom.squashfs
+sudo rm -f alpine-custom.iso
 
 # Clean temporary directories
 sudo rm -rf custom-rootfs/var/cache/*
