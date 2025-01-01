@@ -162,12 +162,37 @@ EOF
 exit
 ```
 
-## 5. Create Network Boot Image
+## 5. Clean Up and Optimize Image
 
 ```bash
-# Create squashfs image
+# Remove unnecessary files
+cd custom-rootfs
+sudo rm -rf \
+    usr/share/man/* \
+    usr/share/doc/* \
+    usr/share/info/* \
+    usr/share/i18n/* \
+    usr/share/locale/* \
+    usr/share/zoneinfo/* \
+    var/cache/apk/* \
+    var/cache/misc/* \
+    var/log/* \
+    tmp/*
+
+# Optionally remove language files if not needed
+sudo rm -rf usr/share/locale/*
+
+# Clear any temp files
+sudo find . -name '*.pyc' -delete
+sudo find . -name '*.pyo' -delete
+sudo find . -name '*__pycache__*' -delete
+
+## 6. Create Network Boot Image
+
+```bash
+# Create squashfs image with optimized compression
 cd ..
-sudo mksquashfs custom-rootfs alpine-custom.squashfs -comp xz -b 1M
+sudo mksquashfs custom-rootfs alpine-custom.squashfs -comp xz -Xbcj x86 -Xdict-size 1M -b 1M -no-exports -no-recovery -always-use-fragments
 
 # Copy kernel and create initial ramdisk
 mkdir -p bootfiles
