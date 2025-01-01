@@ -207,7 +207,7 @@ sudo cp bootfiles/initramfs-lts iso/boot/
 sudo cp alpine-custom.squashfs iso/boot/
 
 # Install syslinux for ISO creation
-sudo apt-get install -y syslinux isolinux
+sudo apt-get install -y syslinux isolinux syslinux-utils
 
 # Copy syslinux files
 sudo cp /usr/lib/ISOLINUX/isolinux.bin iso/boot/syslinux/
@@ -242,7 +242,7 @@ sudo xorriso -as mkisofs \
     iso/
 
 # Make ISO bootable (hybrid ISO)
-isohybrid alpine-custom.iso
+sudo isohybrid alpine-custom.iso
 ```
 
 ## 7. iPXE Boot Configuration
