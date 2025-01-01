@@ -114,6 +114,10 @@ chmod +x dotnet-install.sh
 ./dotnet-install.sh --runtime dotnet --channel 8.0 --install-dir /usr/share/dotnet
 ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 
+# Install mkinitfs and generate initramfs
+apk add mkinitfs
+mkinitfs -n $(ls /lib/modules)
+
 # Create service user
 adduser -D -h /opt/imaging-service imaging-service
 mkdir -p /opt/imaging-service
@@ -201,8 +205,8 @@ mkdir -p iso/EFI/BOOT
 mkdir -p iso/apks
 
 # Copy boot files
-cp custom-rootfs/boot/vmlinuz-lts iso/boot/
-cp custom-rootfs/boot/initramfs-lts iso/boot/
+sudo cp custom-rootfs/boot/vmlinuz-lts iso/boot/
+sudo cp custom-rootfs/boot/initramfs-$(ls custom-rootfs/lib/modules) iso/boot/initramfs-lts
 cp alpine-custom.squashfs iso/boot/
 
 # Copy BIOS boot files
