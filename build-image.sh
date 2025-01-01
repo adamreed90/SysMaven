@@ -145,7 +145,21 @@ features="ata base cdrom squashfs ext4 mmc scsi usb virtio network dhcp"
 MKINITFS
 
 # Generate initramfs
-mkinitfs -n -b /boot -k $KERNEL_VERSION
+mkinitfs -n $KERNEL_VERSION
+
+# Ensure we have the correct initramfs
+if [ -f /boot/initramfs-lts ]; then
+    echo "Using existing initramfs-lts"
+elif [ -f /boot/initramfs-$KERNEL_VERSION ]; then
+    echo "Copying kernel-specific initramfs to initramfs-lts"
+    cp /boot/initramfs-$KERNEL_VERSION /boot/initramfs-lts
+elif [ -f /boot/initramfs-generic ]; then
+    echo "Using generic initramfs as initramfs-lts"
+    cp /boot/initramfs-generic /boot/initramfs-lts
+else
+    echo "No suitable initramfs found, attempting to generate directly"
+    mkinitfs -n -o /boot/initramfs-lts $KERNEL_VERSION
+fi
 
 # Create service user
 adduser -D -h /opt/imaging-service imaging-service
@@ -226,7 +240,17 @@ mkdir -p iso/{boot/{syslinux,grub},EFI/BOOT,apks}
 log "Copying boot files..."
 KERNEL_VERSION=$(ls "$CUSTOM_ROOTFS/lib/modules")
 cp "$CUSTOM_ROOTFS/boot/vmlinuz-lts" iso/boot/ || error "Failed to copy kernel"
-cp "$CUSTOM_ROOTFS/boot/initramfs-$KERNEL_VERSION" iso/boot/initramfs-lts || error "Failed to copy initramfs"
+
+# Try to find and copy the correct initramfs
+if [ -f "$CUSTOM_ROOTFS/boot/initramfs-lts" ]; then
+    cp "$CUSTOM_ROOTFS/boot/initramfs-lts" iso/boot/ || error "Failed to copy initramfs-lts"
+elif [ -f "$CUSTOM_ROOTFS/boot/initramfs-$KERNEL_VERSION" ]; then
+    cp "$CUSTOM_ROOTFS/boot/initramfs-$KERNEL_VERSION" iso/boot/initramfs-lts || error "Failed to copy kernel-specific initramfs"
+elif [ -f "$CUSTOM_ROOTFS/boot/initramfs-generic" ]; then
+    cp "$CUSTOM_ROOTFS/boot/initramfs-generic" iso/boot/initramfs-lts || error "Failed to copy generic initramfs"
+else
+    error "No suitable initramfs found in $CUSTOM_ROOTFS/boot/"
+fi
 cp alpine-custom.squashfs iso/boot/
 
 # Copy BIOS boot files
