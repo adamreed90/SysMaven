@@ -60,6 +60,7 @@ apk add bash
 # Now install all necessary packages
 apk add --no-cache \
     alpine-base \
+    linux-lts \
     icu \
     krb5-libs \
     libgcc \
