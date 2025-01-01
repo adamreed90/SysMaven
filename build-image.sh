@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Exit on error
+# Exit on any error
 set -e
 
 # Function to log messages
@@ -8,14 +8,28 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
+# Function to log errors and exit
 error() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" >&2
     exit 1
 }
 
+# Function to clean up on exit
+cleanup() {
+    log "Cleaning up..."
+    if [ -d "$WORK_DIR/$CUSTOM_ROOTFS" ]; then
+        umount -l "$WORK_DIR/$CUSTOM_ROOTFS/dev" 2>/dev/null || true
+        umount -l "$WORK_DIR/$CUSTOM_ROOTFS/proc" 2>/dev/null || true
+        umount -l "$WORK_DIR/$CUSTOM_ROOTFS/sys" 2>/dev/null || true
+    fi
+}
+
+# Register cleanup function
+trap cleanup EXIT
+
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
-    error "This script must be run as root or with sudo"
+    error "This script must be run as root"
 fi
 
 # Configuration variables
@@ -23,37 +37,45 @@ ALPINE_VERSION="3.21"
 WORK_DIR="alpine-custom"
 CUSTOM_ROOTFS="custom-rootfs"
 
-# Required packages
-REQUIRED_PACKAGES=(
-    squashfs-tools
-    xorriso
-    wget
-    syslinux
-    isolinux
-    grub-efi-amd64-bin
-    mtools
-)
-
-log "Starting Alpine Linux Network Boot Image build process..."
+# Fix /dev/null if needed
+log "Checking and fixing /dev/null..."
+if [ ! -c /dev/null ] || [ ! -w /dev/null ]; then
+    rm -f /dev/null
+    mknod -m 666 /dev/null c 1 3
+fi
 
 # Install required packages
 log "Installing required packages..."
-apt-get update
-apt-get install -y "${REQUIRED_PACKAGES[@]}" || error "Failed to install required packages"
+export DEBIAN_FRONTEND=noninteractive
 
-# Create working directory
+# First install gpg
+apt-get -o Dpkg::Options::="--force-confold" install --reinstall -y gpg gpgv
+
+# Then install other required packages
+apt-get -qq update
+apt-get -o Dpkg::Options::="--force-confold" install -y \
+    squashfs-tools \
+    xorriso \
+    wget \
+    syslinux \
+    isolinux \
+    grub-efi-amd64-bin \
+    mtools || error "Failed to install required packages"
+
+# Create and enter working directory
 log "Creating working directory..."
 mkdir -p "$WORK_DIR"
-cd "$WORK_DIR" || error "Failed to change to working directory"
+cd "$WORK_DIR" || error "Failed to enter working directory"
 
 # Download Alpine Linux base
 log "Downloading Alpine Linux minirootfs..."
-wget -q "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/x86_64/alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz" || error "Failed to download Alpine Linux"
+wget -q "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/x86_64/alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz" || \
+    error "Failed to download Alpine Linux"
 
 # Create and extract to custom rootfs
 log "Creating custom rootfs..."
 mkdir -p "$CUSTOM_ROOTFS"
-cd "$CUSTOM_ROOTFS" || error "Failed to change to custom rootfs directory"
+cd "$CUSTOM_ROOTFS" || error "Failed to enter custom rootfs directory"
 tar xzf "../alpine-minirootfs-${ALPINE_VERSION}.0-x86_64.tar.gz" || error "Failed to extract Alpine Linux"
 
 # Prepare chroot environment
@@ -67,6 +89,7 @@ mount -t sysfs none sys || error "Failed to mount sysfs"
 mount -t devtmpfs none dev || error "Failed to mount devtmpfs"
 
 # Create chroot script
+log "Creating chroot script..."
 cat > chroot-script.sh << 'EOF'
 #!/bin/sh
 set -e
@@ -77,14 +100,12 @@ https://dl-cdn.alpinelinux.org/alpine/v3.21/main
 https://dl-cdn.alpinelinux.org/alpine/v3.21/community
 REPO
 
-# Update and install packages
+# Update and install base packages
 apk update
-apk add bash
-
-# Install necessary packages
-apk add --no-cache \
+apk add \
     alpine-base \
     linux-lts \
+    mkinitfs \
     icu \
     krb5-libs \
     libgcc \
@@ -128,88 +149,6 @@ apk add --no-cache \
     strace \
     ltrace
 
-# Install .NET 8.0 Runtime dependencies
-apk add --no-cache \
-    icu-libs \
-    krb5-libs \
-    libgcc \
-    libintl \
-    libssl1.1 \
-    libstdc++ \
-    zlib \
-    ca-certificates
-
-# Create dotnet directory
-mkdir -p /usr/share/dotnet
-
-# Download and install .NET Runtime directly
-cd /usr/share/dotnet
-DOTNET_VERSION="8.0.11"
-DOTNET_URL="https://download.visualstudio.microsoft.com/download/pr/3a7c5ed3-4c0c-4471-9cb4-2df32847d28f/5ff96f5dd65a188b3365a160ba4592e7/dotnet-runtime-8.0.11-linux-musl-x64.tar.gz"
-
-echo "Downloading .NET Runtime ${DOTNET_VERSION}..."
-wget -q --no-check-certificate "$DOTNET_URL" -O dotnet-runtime.tar.gz || {
-    echo "Failed to download .NET Runtime, skipping..."
-    exit 0  # Continue build without .NET
-}
-
-echo "Extracting .NET Runtime..."
-tar xzf dotnet-runtime.tar.gz || {
-    echo "Failed to extract .NET Runtime, skipping..."
-    rm -f dotnet-runtime.tar.gz
-    exit 0  # Continue build without .NET
-}
-
-rm -f dotnet-runtime.tar.gz
-ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet
-
-# Verify installation
-if command -v dotnet >/dev/null 2>&1; then
-    echo ".NET Runtime installation successful"
-    dotnet --info || true
-else
-    echo ".NET Runtime installation failed, continuing without .NET"
-fi
-
-cd /
-
-# Install mkinitfs and configure
-apk add mkinitfs
-KERNEL_VERSION=$(ls /lib/modules)
-echo "Installing kernel version: $KERNEL_VERSION"
-
-# Configure initramfs features
-cat > /etc/mkinitfs/mkinitfs.conf << MKINITFS
-features="ata base cdrom squashfs ext4 mmc scsi usb virtio network dhcp"
-MKINITFS
-
-# Generate initramfs explicitly for the LTS kernel
-KERNEL_VERSION=$(ls /lib/modules)
-echo "Generating initramfs for kernel version: $KERNEL_VERSION"
-
-# Configure mkinitfs with additional required features
-cat > /etc/mkinitfs/features.d/netboot.modules << EOF
-kernel/drivers/net/ethernet/*
-kernel/drivers/net/phy/*
-kernel/drivers/net/*
-kernel/net/*
-EOF
-
-# Create chroot script
-cat > "custom-rootfs/chroot-script.sh" << 'EOF'
-#!/bin/sh
-set -e
-
-# Configure repositories
-cat > /etc/apk/repositories << REPO
-https://dl-cdn.alpinelinux.org/alpine/v3.21/main
-https://dl-cdn.alpinelinux.org/alpine/v3.21/community
-REPO
-
-# Update and install base packages
-apk update
-apk add mkinitfs linux-lts
-
 # Configure mkinitfs with additional required features
 mkdir -p /etc/mkinitfs/features.d
 cat > /etc/mkinitfs/features.d/netboot.modules << NETBOOT
@@ -218,6 +157,10 @@ kernel/drivers/net/phy/*
 kernel/drivers/net/*
 kernel/net/*
 NETBOOT
+
+cat > /etc/mkinitfs/mkinitfs.conf << MKINITFS
+features="ata base cdrom squashfs ext4 mmc scsi usb virtio network dhcp"
+MKINITFS
 
 # Get kernel version and create initramfs
 KERNEL_VERSION=$(ls /lib/modules)
@@ -234,92 +177,13 @@ fi
 ls -lh /boot/
 EOF
 
-# Make chroot script executable
-chmod +x "custom-rootfs/chroot-script.sh"
-
-# Execute chroot script
-log "Executing chroot script..."
-chroot "custom-rootfs" /chroot-script.sh
-
-# Verify initramfs creation
-if [ ! -f /boot/initramfs-lts ]; then
-    echo "Failed to create initramfs-lts, attempting fallback method..."
-    mkinitfs -n -o /boot/initramfs-lts
-fi
-
-# Check final initramfs size
-if [ -f /boot/initramfs-lts ]; then
-    echo "Verifying initramfs-lts size:"
-    ls -lh /boot/initramfs-lts
-else
-    echo "ERROR: Failed to create initramfs-lts"
-    exit 1
-fi
-
-# Create service user
-adduser -D -h /opt/imaging-service imaging-service
-mkdir -p /opt/imaging-service
-
-# Create service startup script
-cat > /etc/init.d/imaging-service << 'INIT'
-#!/sbin/openrc-run
-
-name="imaging-service"
-description="Imaging Service"
-command="/usr/bin/dotnet"
-command_args="/opt/imaging-service/ImagingService.dll"
-directory="/opt/imaging-service"
-user="imaging-service"
-group="imaging-service"
-pidfile="/run/${RC_SVCNAME}.pid"
-start_stop_daemon_args="--background --make-pidfile"
-
-depend() {
-    need net
-    after net
-}
-INIT
-
-chmod +x /etc/init.d/imaging-service
-rc-update add imaging-service default
-
-# Configure serial console
-cat > /etc/inittab << INITTAB
-::sysinit:/sbin/openrc sysinit
-::sysinit:/sbin/openrc boot
-::wait:/sbin/openrc default
-ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
-::ctrlaltdel:/sbin/reboot
-::shutdown:/sbin/openrc shutdown
-INITTAB
-
-# Verify boot files
-ls -l /boot/vmlinuz-lts /boot/initramfs-*
-EOF
-
 # Make chroot script executable and run it
 chmod +x chroot-script.sh
-chroot . /bin/sh ./chroot-script.sh || error "Chroot configuration failed"
+log "Executing chroot script..."
+chroot . /chroot-script.sh || error "Chroot configuration failed"
 
-# Clean up and unmount
-log "Cleaning up and unmounting..."
+# Return to working directory
 cd ..
-umount -l "$CUSTOM_ROOTFS/dev"
-umount -l "$CUSTOM_ROOTFS/proc"
-umount -l "$CUSTOM_ROOTFS/sys"
-
-# Remove unnecessary files
-log "Removing unnecessary files..."
-rm -rf "$CUSTOM_ROOTFS/usr/share/man/"* \
-       "$CUSTOM_ROOTFS/usr/share/doc/"* \
-       "$CUSTOM_ROOTFS/usr/share/info/"* \
-       "$CUSTOM_ROOTFS/usr/share/i18n/"* \
-       "$CUSTOM_ROOTFS/usr/share/locale/"* \
-       "$CUSTOM_ROOTFS/usr/share/zoneinfo/"* \
-       "$CUSTOM_ROOTFS/var/cache/apk/"* \
-       "$CUSTOM_ROOTFS/var/cache/misc/"* \
-       "$CUSTOM_ROOTFS/var/log/"* \
-       "$CUSTOM_ROOTFS/tmp/"*
 
 # Create squashfs image
 log "Creating squashfs image..."
@@ -333,19 +197,8 @@ mkdir -p iso/{boot/{syslinux,grub},EFI/BOOT,apks}
 
 # Copy boot files
 log "Copying boot files..."
-KERNEL_VERSION=$(ls "$CUSTOM_ROOTFS/lib/modules")
 cp "$CUSTOM_ROOTFS/boot/vmlinuz-lts" iso/boot/ || error "Failed to copy kernel"
-
-# Try to find and copy the correct initramfs
-if [ -f "$CUSTOM_ROOTFS/boot/initramfs-lts" ]; then
-    cp "$CUSTOM_ROOTFS/boot/initramfs-lts" iso/boot/ || error "Failed to copy initramfs-lts"
-elif [ -f "$CUSTOM_ROOTFS/boot/initramfs-$KERNEL_VERSION" ]; then
-    cp "$CUSTOM_ROOTFS/boot/initramfs-$KERNEL_VERSION" iso/boot/initramfs-lts || error "Failed to copy kernel-specific initramfs"
-elif [ -f "$CUSTOM_ROOTFS/boot/initramfs-generic" ]; then
-    cp "$CUSTOM_ROOTFS/boot/initramfs-generic" iso/boot/initramfs-lts || error "Failed to copy generic initramfs"
-else
-    error "No suitable initramfs found in $CUSTOM_ROOTFS/boot/"
-fi
+cp "$CUSTOM_ROOTFS/boot/initramfs-lts" iso/boot/ || error "Failed to copy initramfs"
 cp alpine-custom.squashfs iso/boot/
 
 # Copy BIOS boot files
