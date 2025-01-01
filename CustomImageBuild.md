@@ -192,8 +192,8 @@ sudo mksquashfs custom-rootfs alpine-custom.squashfs -comp xz -Xbcj x86 -Xdict-s
 
 # Copy kernel and create initial ramdisk
 mkdir -p bootfiles
-cp custom-rootfs/boot/vmlinuz-lts bootfiles/
-cp custom-rootfs/boot/initramfs-lts bootfiles/
+sudo cp custom-rootfs/boot/vmlinuz-lts bootfiles/
+sudo cp custom-rootfs/boot/initramfs-lts bootfiles/
 ```
 
 ## 7. iPXE Boot Configuration
