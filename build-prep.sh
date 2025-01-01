@@ -215,5 +215,14 @@ main() {
     echo
 }
 
+cleanup_mounts() {
+    log "Cleaning up mounts..."
+    umount -l "${CUSTOM_ROOTFS}/dev" 2>/dev/null || true
+    umount -l "${CUSTOM_ROOTFS}/proc" 2>/dev/null || true
+    umount -l "${CUSTOM_ROOTFS}/sys" 2>/dev/null || true
+}
+
+#cleanup_mounts
+#rm -rf ${BUILD_DIR}
 # Run main function
 main "$@"
