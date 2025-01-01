@@ -8,7 +8,9 @@ sudo apt-get update
 sudo apt-get install -y \
     squashfs-tools \
     xorriso \
-    wget
+    wget \
+    syslinux \
+    isolinux
 
 # Create working directory
 mkdir alpine-custom
@@ -184,7 +186,7 @@ sudo rm -rf \
 cd ..
 ```
 
-## 6. Create Network Boot Image
+## 6. Create Boot Images
 
 ```bash
 # Create squashfs image with optimized compression
@@ -194,6 +196,53 @@ sudo mksquashfs custom-rootfs alpine-custom.squashfs -comp xz -Xbcj x86 -Xdict-s
 mkdir -p bootfiles
 sudo cp custom-rootfs/boot/vmlinuz-lts bootfiles/
 sudo cp custom-rootfs/boot/initramfs-lts bootfiles/
+
+# Create ISO directory structure
+mkdir -p iso/boot/syslinux
+mkdir -p iso/apks
+
+# Copy boot files
+cp bootfiles/vmlinuz-lts iso/boot/
+cp bootfiles/initramfs-lts iso/boot/
+cp alpine-custom.squashfs iso/boot/
+
+# Install syslinux for ISO creation
+sudo apt-get install -y syslinux isolinux
+
+# Copy syslinux files
+sudo cp /usr/lib/ISOLINUX/isolinux.bin iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/ldlinux.c32 iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/libcom32.c32 iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/libutil.c32 iso/boot/syslinux/
+sudo cp /usr/lib/syslinux/modules/bios/vesamenu.c32 iso/boot/syslinux/
+
+# Create syslinux configuration
+cat > iso/boot/syslinux/syslinux.cfg << EOF
+TIMEOUT 20
+PROMPT 1
+DEFAULT genti
+
+LABEL genti
+    MENU LABEL Custom Alpine Linux
+    KERNEL /boot/vmlinuz-lts
+    INITRD /boot/initramfs-lts
+    APPEND root=/dev/ram0 console=tty0 console=ttyS0,115200n8 nomodeset quiet modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0
+EOF
+
+# Create ISO
+sudo xorriso -as mkisofs \
+    -o alpine-custom.iso \
+    -b boot/syslinux/isolinux.bin \
+    -c boot/syslinux/boot.cat \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -l -J -R \
+    -V "ALPINE_CUSTOM" \
+    iso/
+
+# Make ISO bootable (hybrid ISO)
+isohybrid alpine-custom.iso
 ```
 
 ## 7. iPXE Boot Configuration
