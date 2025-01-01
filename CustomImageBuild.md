@@ -209,7 +209,7 @@ sudo cp bootfiles/initramfs-lts iso/boot/
 sudo cp alpine-custom.squashfs iso/boot/
 
 # Install required packages for ISO creation
-sudo apt-get install -y syslinux isolinux grub-efi-amd64-bin mtools
+sudo apt-get install -y syslinux isolinux grub-efi-amd64-bin mtools syslinux-utils
 
 # Copy BIOS boot files
 sudo cp /usr/lib/ISOLINUX/isolinux.bin iso/boot/syslinux/
