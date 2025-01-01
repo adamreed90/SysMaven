@@ -242,7 +242,6 @@ chain --timeout 5000 http://your-control-service/api/boot-status?ip=${ipaddr} ||
 kernel http://your-image-server/vmlinuz-lts root=/dev/ram0 ip=dhcp \
     console=tty0 console=ttyS0,115200n8 \
     nomodeset panic=30 quiet loglevel=3 ipv6.disable=1 \
-    alpine_repo="http://your-image-server" \
     modloop=http://your-image-server/alpine-custom.squashfs \
     modules=loop,squashfs alpine_dev=loop0
 initrd http://your-image-server/initramfs-custom
