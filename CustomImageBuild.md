@@ -204,9 +204,9 @@ mkdir -p iso/EFI/BOOT
 mkdir -p iso/apks
 
 # Copy boot files
-cp bootfiles/vmlinuz-lts iso/boot/
-cp bootfiles/initramfs-lts iso/boot/
-cp alpine-custom.squashfs iso/boot/
+sudo cp bootfiles/vmlinuz-lts iso/boot/
+sudo cp bootfiles/initramfs-lts iso/boot/
+sudo cp alpine-custom.squashfs iso/boot/
 
 # Install required packages for ISO creation
 sudo apt-get install -y syslinux isolinux grub-efi-amd64-bin mtools
