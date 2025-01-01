@@ -209,7 +209,7 @@ cp bootfiles/initramfs-lts iso/boot/
 cp alpine-custom.squashfs iso/boot/
 
 # Install required packages for ISO creation
-sudo apt-get install -y syslinux isolinux grub-efi-amd64-bin mtools syslinux-utils
+sudo apt-get install -y syslinux isolinux grub-efi-amd64-bin mtools
 
 # Copy BIOS boot files
 sudo cp /usr/lib/ISOLINUX/isolinux.bin iso/boot/syslinux/
@@ -267,14 +267,18 @@ sudo xorriso -as mkisofs \
     -eltorito-catalog boot/syslinux/boot.cat \
     -no-emul-boot -boot-load-size 4 -boot-info-table \
     -eltorito-alt-boot \
-    -e efiboot.img \
+    -e /boot/efiboot.img \
     -no-emul-boot \
     -isohybrid-gpt-basdat \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
     iso/
 
-# Clean up temporary UEFI boot image
-rm efiboot.img
+# Create UEFI boot disk image
+dd if=/dev/zero of=iso/boot/efiboot.img bs=1M count=4
+mkfs.vfat iso/boot/efiboot.img
+mmd -i iso/boot/efiboot.img ::/EFI
+mmd -i iso/boot/efiboot.img ::/EFI/BOOT
+mcopy -i iso/boot/efiboot.img iso/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
 ```
 
 ## 7. iPXE Boot Configuration
