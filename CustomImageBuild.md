@@ -1,5 +1,12 @@
 # Alpine Linux Network Boot Image Build Guide
 
+## Prerequisites
+
+- Ubuntu/Debian-based system for building
+- Root/sudo access
+- At least 4GB free disk space
+- Internet connection for downloading packages
+
 ## 1. Set Up Build Environment
 
 ```bash
@@ -50,18 +57,19 @@ sudo chroot . /bin/sh
 ## 4. Configure System
 
 ```bash
+# Inside chroot environment
+
 # Configure repositories
 cat > /etc/apk/repositories << EOF
-https://dl-cdn.alpinelinux.org/alpine/edge/main
-https://dl-cdn.alpinelinux.org/alpine/edge/community
-https://dl-cdn.alpinelinux.org/alpine/edge/testing
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/main
+https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/community
 EOF
 
 # Update and add bash
 apk update
 apk add bash
 
-# Install all necessary packages
+# Install necessary packages
 apk add --no-cache \
     alpine-base \
     linux-lts \
@@ -116,7 +124,17 @@ ln -s /usr/share/dotnet/dotnet /usr/bin/dotnet
 
 # Install mkinitfs and generate initramfs
 apk add mkinitfs
-mkinitfs -n $(ls /lib/modules)
+KERNEL_VERSION=$(ls /lib/modules)
+echo "Installing kernel version: $KERNEL_VERSION"
+
+# Ensure proper initramfs generation
+cat > /etc/mkinitfs/mkinitfs.conf << EOF
+features="ata base cdrom squashfs ext4 mmc scsi usb virtio network dhcp"
+EOF
+
+# Generate initramfs explicitly
+mkinitfs -n -b /boot -k $KERNEL_VERSION
+ls -l /boot/initramfs-* || echo "Warning: initramfs not found!"
 
 # Create service user
 adduser -D -h /opt/imaging-service imaging-service
@@ -162,6 +180,10 @@ ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
 ::shutdown:/sbin/openrc shutdown
 EOF
 
+# Verify kernel and initramfs before exiting chroot
+echo "Verifying boot files:"
+ls -l /boot/vmlinuz-lts /boot/initramfs-*
+
 # Exit chroot
 exit
 ```
@@ -204,9 +226,23 @@ mkdir -p iso/boot/grub
 mkdir -p iso/EFI/BOOT
 mkdir -p iso/apks
 
-# Copy boot files
+# Verify and copy boot files
+KERNEL_VERSION=$(ls custom-rootfs/lib/modules)
+echo "Using kernel version: $KERNEL_VERSION"
+
+# Copy boot files with verification
+if [ ! -f custom-rootfs/boot/vmlinuz-lts ]; then
+    echo "Error: vmlinuz-lts not found!"
+    exit 1
+fi
+
+if [ ! -f custom-rootfs/boot/initramfs-$KERNEL_VERSION ]; then
+    echo "Error: initramfs not found!"
+    exit 1
+fi
+
 sudo cp custom-rootfs/boot/vmlinuz-lts iso/boot/
-sudo cp custom-rootfs/boot/initramfs-$(ls custom-rootfs/lib/modules) iso/boot/initramfs-lts
+sudo cp custom-rootfs/boot/initramfs-$KERNEL_VERSION iso/boot/initramfs-lts
 cp alpine-custom.squashfs iso/boot/
 
 # Copy BIOS boot files
@@ -270,6 +306,9 @@ sudo xorriso -as mkisofs \
     -isohybrid-gpt-basdat \
     -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
     iso/
+
+echo "Verifying created ISO file:"
+ls -lh alpine-custom.iso
 ```
 
 ## 7. iPXE Boot Configuration
@@ -319,4 +358,21 @@ sudo rm -rf custom-rootfs/tmp/*
 sudo rm -rf custom-rootfs/run/*
 ```
 
-Then proceed with the build process from step 3 (mounting and chroot).
+## Troubleshooting
+
+1. If initramfs is not generated:
+   - Inside chroot, check kernel version: `ls /lib/modules/`
+   - Verify mkinitfs is installed: `apk info mkinitfs`
+   - Manually generate: `mkinitfs -n -b /boot -k $(ls /lib/modules)`
+
+2. If boot files are missing:
+   - Check paths: `ls -l /boot/`
+   - Ensure linux-lts package is installed: `apk info linux-lts`
+   - Verify kernel symlinks: `ls -l /boot/vmlinuz*`
+
+3. If ISO fails to boot:
+   - Check isolinux.bin and other BIOS files are present
+   - Verify UEFI boot loader was created
+   - Ensure all paths in syslinux.cfg and grub.cfg are correct
+
+Remember to replace "your-image-server" and "your-control-service" with actual server addresses in the iPXE configuration.
