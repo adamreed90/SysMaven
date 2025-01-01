@@ -199,50 +199,82 @@ sudo cp custom-rootfs/boot/initramfs-lts bootfiles/
 
 # Create ISO directory structure
 mkdir -p iso/boot/syslinux
+mkdir -p iso/boot/grub
+mkdir -p iso/EFI/BOOT
 mkdir -p iso/apks
 
 # Copy boot files
-sudo cp bootfiles/vmlinuz-lts iso/boot/
-sudo cp bootfiles/initramfs-lts iso/boot/
-sudo cp alpine-custom.squashfs iso/boot/
+cp bootfiles/vmlinuz-lts iso/boot/
+cp bootfiles/initramfs-lts iso/boot/
+cp alpine-custom.squashfs iso/boot/
 
-# Install syslinux for ISO creation
-sudo apt-get install -y syslinux isolinux syslinux-utils
+# Install required packages for ISO creation
+sudo apt-get install -y syslinux isolinux grub-efi-amd64-bin mtools syslinux-utils
 
-# Copy syslinux files
+# Copy BIOS boot files
 sudo cp /usr/lib/ISOLINUX/isolinux.bin iso/boot/syslinux/
 sudo cp /usr/lib/syslinux/modules/bios/ldlinux.c32 iso/boot/syslinux/
 sudo cp /usr/lib/syslinux/modules/bios/libcom32.c32 iso/boot/syslinux/
 sudo cp /usr/lib/syslinux/modules/bios/libutil.c32 iso/boot/syslinux/
 sudo cp /usr/lib/syslinux/modules/bios/vesamenu.c32 iso/boot/syslinux/
 
-# Create syslinux configuration
+# Create syslinux configuration (BIOS)
 cat > iso/boot/syslinux/syslinux.cfg << EOF
 TIMEOUT 20
 PROMPT 1
-DEFAULT genti
+DEFAULT custom_alpine
 
-LABEL genti
+LABEL custom_alpine
     MENU LABEL Custom Alpine Linux
     KERNEL /boot/vmlinuz-lts
     INITRD /boot/initramfs-lts
     APPEND root=/dev/ram0 console=tty0 console=ttyS0,115200n8 nomodeset quiet modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0
 EOF
 
-# Create ISO
+# Create GRUB configuration (UEFI)
+cat > iso/boot/grub/grub.cfg << EOF
+set timeout=20
+set default=0
+
+menuentry "Custom Alpine Linux" {
+    linux /boot/vmlinuz-lts root=/dev/ram0 console=tty0 console=ttyS0,115200n8 nomodeset quiet modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0
+    initrd /boot/initramfs-lts
+}
+EOF
+
+# Create UEFI boot loader
+grub-mkstandalone \
+    --format=x86_64-efi \
+    --output=iso/EFI/BOOT/BOOTX64.EFI \
+    --locales="" \
+    --fonts="" \
+    "boot/grub/grub.cfg=iso/boot/grub/grub.cfg"
+
+# Create FAT16 UEFI boot disk image
+dd if=/dev/zero of=efiboot.img bs=1M count=4
+mkfs.vfat efiboot.img
+mmd -i efiboot.img ::/EFI
+mmd -i efiboot.img ::/EFI/BOOT
+mcopy -i efiboot.img iso/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/
+
+# Create ISO with both BIOS and UEFI support
 sudo xorriso -as mkisofs \
     -o alpine-custom.iso \
-    -b boot/syslinux/isolinux.bin \
-    -c boot/syslinux/boot.cat \
+    -iso-level 3 \
+    -full-iso9660-filenames \
+    -volid "ALPINE_CUSTOM" \
+    -eltorito-boot boot/syslinux/isolinux.bin \
+    -eltorito-catalog boot/syslinux/boot.cat \
+    -no-emul-boot -boot-load-size 4 -boot-info-table \
+    -eltorito-alt-boot \
+    -e efiboot.img \
     -no-emul-boot \
-    -boot-load-size 4 \
-    -boot-info-table \
-    -l -J -R \
-    -V "ALPINE_CUSTOM" \
+    -isohybrid-gpt-basdat \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
     iso/
 
-# Make ISO bootable (hybrid ISO)
-sudo isohybrid alpine-custom.iso
+# Clean up temporary UEFI boot image
+rm efiboot.img
 ```
 
 ## 7. iPXE Boot Configuration
