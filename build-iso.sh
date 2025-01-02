@@ -135,57 +135,61 @@ create_iso_structure() {
 # Copy boot files
 copy_boot_files() {
     log "INFO" "Copying boot files..."
-    log "INFO" "Contents of source /boot:"
-    ls -la "${CUSTOM_ROOTFS}/boot/"
     
-    # Copy kernel
-    cp "${CUSTOM_ROOTFS}/boot/vmlinuz-lts" "${ISO_DIR}/boot/vmlinuz" || {
-        log_error "Failed to copy kernel"
+    # Create syslinux directory if it doesn't exist
+    mkdir -p "${ISO_DIR}/boot/syslinux"
+    
+    # Essential ISOLINUX files
+    if [ ! -f "/usr/lib/ISOLINUX/isolinux.bin" ]; then
+        log_error "isolinux.bin not found. Please install isolinux package."
         exit 1
     }
     
-    # Copy initramfs
-    cp "${CUSTOM_ROOTFS}/boot/initramfs-lts" "${ISO_DIR}/boot/initramfs" || {
-        log_error "Failed to copy initramfs"
+    if [ ! -f "/usr/lib/syslinux/modules/bios/ldlinux.c32" ]; then
+        log_error "syslinux modules not found. Please install syslinux-common package."
         exit 1
     }
     
-    # Copy squashfs
-    cp "${BUILD_DIR}/alpine-custom.squashfs" "${ISO_DIR}/boot/" || {
-        log_error "Failed to copy squashfs"
-        exit 1
-    }
-    
-    # Copy BIOS boot files
-    cp /usr/lib/ISOLINUX/isolinux.bin "${ISO_DIR}/boot/syslinux/" || {
+    # Copy ISOLINUX files
+    cp "/usr/lib/ISOLINUX/isolinux.bin" "${ISO_DIR}/boot/syslinux/" || {
         log_error "Failed to copy isolinux.bin"
         exit 1
     }
     
-    local syslinux_modules=(
-        "ldlinux.c32"
-        "libcom32.c32"
-        "libutil.c32"
-        "menu.c32"
-        "vesamenu.c32"
-        "chain.c32"
-        "reboot.c32"
+    # Required modules for basic menu functionality
+    local required_modules=(
+        "ldlinux.c32"      # Core module
+        "libcom32.c32"     # Required by menu
+        "libutil.c32"      # Required by menu
+        "menu.c32"         # Basic menu system
+        "vesamenu.c32"     # Graphical menu
     )
     
-    for module in "${syslinux_modules[@]}"; do
-        if [ -f "/usr/lib/syslinux/modules/bios/${module}" ]; then
-            cp "/usr/lib/syslinux/modules/bios/${module}" "${ISO_DIR}/boot/syslinux/" || {
-                log_error "Failed to copy syslinux module: ${module}"
-                exit 1
-            }
-        else
-            log_warning "Syslinux module not found: ${module}"
-        fi
-    done
+    for module in "${required_modules[@]}"; do
+        cp "/usr/lib/syslinux/modules/bios/${module}" "${ISO_DIR}/boot/syslinux/" || {
+            log_error "Failed to copy required module: ${module}"
+            exit 1
+        }
+    }
     
+    # Rename isolinux.bin to syslinux.bin for consistency
+    cp "${ISO_DIR}/boot/syslinux/isolinux.bin" "${ISO_DIR}/boot/syslinux/syslinux.bin"
+    
+    # Modify syslinux config to be more basic for debugging
+    cat > "${ISO_DIR}/boot/syslinux/syslinux.cfg" << 'EOF'
+DEFAULT menu.c32
+PROMPT 0
+TIMEOUT 50
+MENU TITLE Boot Menu
+
+LABEL alpine
+    MENU LABEL Boot Alpine Linux
+    LINUX /boot/vmlinuz
+    INITRD /boot/initramfs
+    APPEND root=/dev/ram0 modules=loop,squashfs,sd-mod,usb-storage quiet
+EOF
+
     log_success "Boot files copied successfully"
-    log "INFO" "Contents of ISO boot directory:"
-    ls -la "${ISO_DIR}/boot/"
 }
 
 # Create boot configurations
@@ -284,25 +288,31 @@ create_iso() {
     
     xorriso -as mkisofs \
         -o "${OUTPUT_ISO}" \
-        -iso-level 3 \
-        -full-iso9660-filenames \
-        -volid "ALPINE_CUSTOM" \
-        -eltorito-boot boot/syslinux/isolinux.bin \
-        -eltorito-catalog boot/syslinux/boot.cat \
-        -no-emul-boot -boot-load-size 4 -boot-info-table \
+        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+        -partition_offset 16 \
+        -J -R -l \
+        -c boot/syslinux/boot.cat \
+        -b boot/syslinux/isolinux.bin \
+        -no-emul-boot \
+        -boot-load-size 4 \
+        -boot-info-table \
         -eltorito-alt-boot \
         -e boot/efiboot.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
-        -isohybrid-apm-hfsplus \
-        -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+        -volid "ALPINE_CUSTOM" \
         "${ISO_DIR}/" || {
             log_error "Failed to create ISO"
             exit 1
         }
     
+    # Make ISO hybrid
+    isohybrid --uefi "${OUTPUT_ISO}" || {
+        log_error "Failed to make ISO hybrid"
+        exit 1
+    }
+    
     log_success "ISO created successfully: ${OUTPUT_ISO}"
-    ls -lh "${OUTPUT_ISO}"
 }
 
 # Verify ISO
