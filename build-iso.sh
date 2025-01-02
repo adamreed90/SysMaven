@@ -256,8 +256,8 @@ create_uefi_boot() {
             exit 1
         }
     
-    # Create UEFI boot image
-    dd if=/dev/zero of="${ISO_DIR}/boot/efiboot.img" bs=1M count=4 || {
+    # Create UEFI boot image using truncate instead of dd
+    truncate -s 4M "${ISO_DIR}/boot/efiboot.img" || {
         log_error "Failed to create UEFI boot image"
         exit 1
     }
