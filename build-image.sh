@@ -16,14 +16,35 @@ LOG_FILE="${LOG_DIR}/build-$(date +%Y%m%d-%H%M%S).log"
 CUSTOM_ROOTFS="${BUILD_DIR}/custom-rootfs"
 CHROOT_SCRIPT="${BUILD_DIR}/chroot_commands.sh"
 
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
 # Logging functions
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+    local level=$1
+    shift
+    local message="[$(date '+%Y-%m-%d %H:%M:%S')] [${level}] $*"
+    echo -e "${message}" | tee -a "$LOG_FILE"
+}
+
+log_success() {
+    echo -e "${GREEN}$*${NC}" | tee -a "$LOG_FILE"
+}
+
+log_warning() {
+    echo -e "${YELLOW}$*${NC}" | tee -a "$LOG_FILE"
+}
+
+log_error() {
+    echo -e "${RED}$*${NC}" | tee -a "$LOG_FILE"
 }
 
 # Error handling
 error_handler() {
-    log "ERROR: Error occurred in script at line: $1"
+    log_error "Error occurred in script at line: $1"
     cleanup_mounts
     exit 1
 }
@@ -32,38 +53,52 @@ trap 'error_handler ${LINENO}' ERR
 
 # Cleanup function
 cleanup_mounts() {
-    log "Cleaning up mounts..."
+    log "INFO" "Cleaning up mounts..."
     umount -l "${CUSTOM_ROOTFS}/dev" 2>/dev/null || true
     umount -l "${CUSTOM_ROOTFS}/proc" 2>/dev/null || true
     umount -l "${CUSTOM_ROOTFS}/sys" 2>/dev/null || true
 }
 
 # Check for root privileges
-if [[ $EUID -ne 0 ]]; then
-    log "This script must be run as root"
-    exit 1
-fi
+check_root() {
+    log "INFO" "Checking root privileges..."
+    if [[ $EUID -ne 0 ]]; then
+        log_error "This script must be run as root"
+        exit 1
+    fi
+    log_success "Root privileges confirmed"
+}
 
 # Verify environment
-if [ ! -d "${CUSTOM_ROOTFS}" ] || [ ! "$(ls -A ${CUSTOM_ROOTFS})" ]; then
-    log "Custom rootfs not found or empty. Please run setup script first."
-    exit 1
-fi
+verify_environment() {
+    log "INFO" "Verifying build environment..."
+    if [ ! -d "${CUSTOM_ROOTFS}" ] || [ ! "$(ls -A ${CUSTOM_ROOTFS})" ]; then
+        log_error "Custom rootfs not found or empty. Please run build-prep.sh first."
+        exit 1
+    fi
+    log_success "Build environment verified"
+}
 
-# Prepare chroot
-log "Preparing chroot environment..."
-cp /etc/resolv.conf "${CUSTOM_ROOTFS}/etc/"
-mount -t proc none "${CUSTOM_ROOTFS}/proc"
-mount -t sysfs none "${CUSTOM_ROOTFS}/sys"
-mount -t devtmpfs none "${CUSTOM_ROOTFS}/dev"
+# Prepare chroot environment
+prepare_chroot() {
+    log "INFO" "Preparing chroot environment..."
+    cp /etc/resolv.conf "${CUSTOM_ROOTFS}/etc/"
+    mount -t proc none "${CUSTOM_ROOTFS}/proc"
+    mount -t sysfs none "${CUSTOM_ROOTFS}/sys"
+    mount -t devtmpfs none "${CUSTOM_ROOTFS}/dev"
+    log_success "Chroot environment prepared"
+}
 
 # Generate chroot script
-cat > "${CHROOT_SCRIPT}" << 'EOF'
+generate_chroot_script() {
+    log "INFO" "Generating chroot script..."
+    
+    cat > "${CHROOT_SCRIPT}" << 'EOF'
 #!/bin/sh
 set -e
 
 # Setup repositories
-cat > /etc/apk/repositories << REPOEOF
+cat > /etc/apk/repositories << 'REPOEOF'
 https://dl-cdn.alpinelinux.org/alpine/v3.21/main
 https://dl-cdn.alpinelinux.org/alpine/v3.21/community
 REPOEOF
@@ -77,7 +112,40 @@ apk add --no-cache \
     openrc \
     dhcpcd \
     bash \
+    e2fsprogs \
+    util-linux \
+    parted \
+    dosfstools \
+    gptfdisk \
+    cfdisk \
+    sfdisk \
+    efibootmgr \
+    hvtools \
     dotnet8-runtime
+
+# Configure mkinitfs
+cat > /etc/mkinitfs/mkinitfs.conf << 'MKINITEOF'
+features="base network squashfs cdrom virtio"
+kernel_opts="console=tty0 console=ttyS0,115200 quiet rootfstype=squashfs"
+initramfs_features="base virtio network squashfs cdrom"
+MKINITEOF
+
+# Create directory for custom initramfs features
+mkdir -p /etc/mkinitfs/features.d/
+
+# Setup custom modules
+cat > /etc/mkinitfs/features.d/custom.modules << 'MODULESEOF'
+kernel/drivers/net/ethernet
+kernel/net/ipv4
+kernel/net/packet
+kernel/drivers/virtio
+kernel/drivers/block
+kernel/drivers/cdrom
+kernel/drivers/ata
+kernel/drivers/scsi/sr_mod
+kernel/drivers/scsi/sd_mod
+kernel/fs/squashfs
+MODULESEOF
 
 # Create boot logging script
 cat > /etc/local.d/10-boot-log.start << 'BOOTLOG'
@@ -96,6 +164,10 @@ echo "Memory Info:" >> /var/log/boot/startup.log
 free -m >> /var/log/boot/startup.log
 echo "Service Status:" >> /var/log/boot/startup.log
 rc-status >> /var/log/boot/startup.log
+echo "Mount Points:" >> /var/log/boot/startup.log
+mount >> /var/log/boot/startup.log
+echo "Block Devices:" >> /var/log/boot/startup.log
+lsblk >> /var/log/boot/startup.log
 
 # Log .NET runtime version
 echo ".NET Runtime Version:" >> /var/log/boot/startup.log
@@ -108,40 +180,23 @@ BOOTLOG
 chmod +x /etc/local.d/10-boot-log.start
 rc-update add local default
 
-# Configure root mounting in initramfs
-cat > /etc/mkinitfs/mkinitfs.conf << MKINITEOF
-features="base network squashfs"
-kernel_opts="console=tty0 console=ttyS0,115200 quiet rootfstype=squashfs root=/dev/ram0"
-initramfs_features="base virtio network squashfs"
-MKINITEOF
-
-# Create custom init script
-mkdir -p /etc/mkinitfs/features.d/
-cat > /etc/mkinitfs/features.d/custom.modules << 'MODULESEOF'
-kernel/drivers/net/ethernet
-kernel/net/ipv4
-kernel/net/packet
-kernel/drivers/virtio
-kernel/drivers/block
-MODULESEOF
-
-# Setup modloop options
-cat > /etc/mkinitfs/modloop.conf << MODLOOPEOF
-# Modloop settings
-modloop_verify=no
-MODLOOPEOF
-
-# Generate initramfs
-mkinitfs -c /etc/mkinitfs/mkinitfs.conf -n "$KERNEL_VERSION"
+# Setup system for DVD boot
+mkdir -p /media/cdrom
+cat > /etc/fstab << 'FSTABEOF'
+/dev/cdrom  /media/cdrom  iso9660  ro,noauto  0 0
+FSTABEOF
 
 # Configure serial console
-cat > /etc/inittab << INITTABEOF
+cat > /etc/inittab << 'INITTABEOF'
 # System initialization
 ::sysinit:/sbin/openrc sysinit
 ::sysinit:/sbin/openrc boot
 ::wait:/sbin/openrc default
 
-# Set up getty on serial console
+# Set up getty
+tty1::respawn:/sbin/getty 38400 tty1
+tty2::respawn:/sbin/getty 38400 tty2
+tty3::respawn:/sbin/getty 38400 tty3
 ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
 
 # Trap CTRL-ALT-DELETE
@@ -152,7 +207,7 @@ ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
 INITTABEOF
 
 # Configure network
-cat > /etc/network/interfaces << NETEOF
+cat > /etc/network/interfaces << 'NETEOF'
 auto lo
 iface lo inet loopback
 
@@ -163,6 +218,9 @@ NETEOF
 # Enable necessary services
 rc-update add networking boot
 rc-update add dhcpcd boot
+rc-update add hv_fcopy_daemon default
+rc-update add hv_kvp_daemon default
+rc-update add hv_vss_daemon default
 
 # Create service directory
 mkdir -p /opt/imaging-service
@@ -208,19 +266,74 @@ chown imaging-service:imaging-service /var/log/imaging-service
 chmod +x /etc/init.d/imaging-service
 rc-update add imaging-service default
 
-# Verify critical files
-ls -l /boot/vmlinuz-lts /boot/initramfs-*
+# Check for existing initramfs-lts
+echo "Checking boot files..."
+if [ ! -f "/boot/initramfs-lts" ]; then
+    echo "No existing initramfs-lts found, generating new one..."
+    KERNEL_VERSION=$(ls /lib/modules)
+    echo "Kernel version: ${KERNEL_VERSION}"
+    echo "Contents of /boot before initramfs generation:"
+    ls -la /boot/
+
+    # Try to generate initramfs with current kernel version
+    if ! mkinitfs "${KERNEL_VERSION}"; then
+        echo "Failed to generate initramfs"
+        exit 1
+    fi
+fi
+
+echo "Contents of /boot:"
+ls -la /boot/
+
+# Verify critical files exist
+echo "Verifying boot files..."
+for file in vmlinuz-lts initramfs-lts; do
+    if [ ! -f "/boot/${file}" ]; then
+        echo "Critical file missing: /boot/${file}"
+        ls -la /boot/
+        exit 1
+    fi
+    echo "Found: /boot/${file}"
+done
 EOF
 
-chmod +x "${CHROOT_SCRIPT}"
+    chmod +x "${CHROOT_SCRIPT}"
+    log_success "Chroot script generated"
+}
 
 # Execute chroot script
-log "Executing chroot script..."
-cp "${CHROOT_SCRIPT}" "${CUSTOM_ROOTFS}/chroot_commands.sh"
-chroot "${CUSTOM_ROOTFS}" /chroot_commands.sh
-rm "${CUSTOM_ROOTFS}/chroot_commands.sh"
+execute_chroot_script() {
+    log "INFO" "Executing chroot script..."
+    cp "${CHROOT_SCRIPT}" "${CUSTOM_ROOTFS}/chroot_commands.sh"
+    chroot "${CUSTOM_ROOTFS}" /chroot_commands.sh
+    rm "${CUSTOM_ROOTFS}/chroot_commands.sh"
+    log_success "Chroot script executed"
+}
 
-# Cleanup
-cleanup_mounts
+# Main function
+main() {
+    echo "Alpine Linux Image Build Script v${SCRIPT_VERSION}"
+    echo "----------------------------------------"
+    
+    # Create log directory if it doesn't exist
+    mkdir -p "${LOG_DIR}"
+    
+    log "INFO" "Starting image build..."
+    
+    check_root
+    verify_environment
+    prepare_chroot
+    generate_chroot_script
+    execute_chroot_script
+    cleanup_mounts
+    
+    log_success "Image build completed successfully!"
+    echo
+    echo "Next steps:"
+    echo "1. Review the log file at: ${LOG_FILE}"
+    echo "2. Proceed with ISO creation using build-iso.sh"
+    echo
+}
 
-log "Build completed successfully!"
+# Run main function
+main "$@"
