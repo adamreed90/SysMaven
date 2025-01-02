@@ -73,7 +73,7 @@ verify_environment() {
     
     # Check if custom rootfs exists and is properly built
     if [ ! -d "${CUSTOM_ROOTFS}" ] || [ ! -f "${CUSTOM_ROOTFS}/boot/vmlinuz-lts" ]; then
-        log_error "Custom rootfs not found or incomplete. Please run build script first."
+        log_error "Custom rootfs not found or incomplete. Please run build-image.sh first."
         exit 1
     fi
     
@@ -127,9 +127,7 @@ create_iso_structure() {
     [ -d "${ISO_DIR}" ] && rm -rf "${ISO_DIR}"
     
     # Create directory structure
-    mkdir -p "${ISO_DIR}/boot/syslinux"
-    mkdir -p "${ISO_DIR}/boot/grub"
-    mkdir -p "${ISO_DIR}/EFI/BOOT"
+    mkdir -p "${ISO_DIR}"/{boot/{grub,syslinux},EFI/BOOT}
     
     log_success "ISO directory structure created"
 }
@@ -137,32 +135,20 @@ create_iso_structure() {
 # Copy boot files
 copy_boot_files() {
     log "INFO" "Copying boot files..."
-    
-    # Get kernel version
-    KERNEL_VERSION=$(ls "${CUSTOM_ROOTFS}/lib/modules")
+    log "INFO" "Contents of source /boot:"
+    ls -la "${CUSTOM_ROOTFS}/boot/"
     
     # Copy kernel
-    cp "${CUSTOM_ROOTFS}/boot/vmlinuz-lts" "${ISO_DIR}/boot/" || {
+    cp "${CUSTOM_ROOTFS}/boot/vmlinuz-lts" "${ISO_DIR}/boot/vmlinuz" || {
         log_error "Failed to copy kernel"
         exit 1
     }
     
-    # Look for initramfs with kernel version first, then try lts symlink
-    if [ -f "${CUSTOM_ROOTFS}/boot/initramfs-${KERNEL_VERSION}" ]; then
-        cp "${CUSTOM_ROOTFS}/boot/initramfs-${KERNEL_VERSION}" "${ISO_DIR}/boot/initramfs-lts" || {
-            log_error "Failed to copy initramfs"
-            exit 1
-        }
-    elif [ -f "${CUSTOM_ROOTFS}/boot/initramfs-lts" ]; then
-        cp "${CUSTOM_ROOTFS}/boot/initramfs-lts" "${ISO_DIR}/boot/initramfs-lts" || {
-            log_error "Failed to copy initramfs"
-            exit 1
-        }
-    else
-        log_error "No initramfs found in ${CUSTOM_ROOTFS}/boot/"
-        ls -la "${CUSTOM_ROOTFS}/boot/"
+    # Copy initramfs
+    cp "${CUSTOM_ROOTFS}/boot/initramfs-lts" "${ISO_DIR}/boot/initramfs" || {
+        log_error "Failed to copy initramfs"
         exit 1
-    fi
+    }
     
     # Copy squashfs
     cp "${BUILD_DIR}/alpine-custom.squashfs" "${ISO_DIR}/boot/" || {
@@ -176,7 +162,17 @@ copy_boot_files() {
         exit 1
     }
     
-    for module in ldlinux.c32 libcom32.c32 libutil.c32 menu.c32 vesamenu.c32 chain.c32 reboot.c32; do
+    local syslinux_modules=(
+        "ldlinux.c32"
+        "libcom32.c32"
+        "libutil.c32"
+        "menu.c32"
+        "vesamenu.c32"
+        "chain.c32"
+        "reboot.c32"
+    )
+    
+    for module in "${syslinux_modules[@]}"; do
         if [ -f "/usr/lib/syslinux/modules/bios/${module}" ]; then
             cp "/usr/lib/syslinux/modules/bios/${module}" "${ISO_DIR}/boot/syslinux/" || {
                 log_error "Failed to copy syslinux module: ${module}"
@@ -188,6 +184,8 @@ copy_boot_files() {
     done
     
     log_success "Boot files copied successfully"
+    log "INFO" "Contents of ISO boot directory:"
+    ls -la "${ISO_DIR}/boot/"
 }
 
 # Create boot configurations
@@ -196,30 +194,46 @@ create_boot_configs() {
     
     # Create syslinux configuration (BIOS)
     cat > "${ISO_DIR}/boot/syslinux/syslinux.cfg" << 'EOF'
-DEFAULT menu.c32
-PROMPT 0
-TIMEOUT 50
-MENU TITLE Custom Alpine Linux Boot Menu
+TIMEOUT 30
+PROMPT 1
+DEFAULT custom_alpine
 
 LABEL custom_alpine
     MENU LABEL Custom Alpine Linux
-    KERNEL /boot/vmlinuz-lts
-    APPEND initrd=/boot/initramfs-lts root=/dev/ram0 console=tty0 console=ttyS0,115200n8 modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0 panic=60
-    
+    LINUX /boot/vmlinuz
+    INITRD /boot/initramfs
+    APPEND root=/dev/ram0 console=tty0 console=ttyS0,115200n8 modules=loop,squashfs,sr_mod modloop=/boot/alpine-custom.squashfs alpine_dev=cdrom quiet
+
 LABEL custom_alpine_debug
     MENU LABEL Custom Alpine Linux (Debug Mode)
-    KERNEL /boot/vmlinuz-lts
-    APPEND initrd=/boot/initramfs-lts root=/dev/ram0 console=tty0 console=ttyS0,115200n8 debug_init=1 modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0 panic=60
+    LINUX /boot/vmlinuz
+    INITRD /boot/initramfs
+    APPEND root=/dev/ram0 console=tty0 console=ttyS0,115200n8 modules=loop,squashfs,sr_mod modloop=/boot/alpine-custom.squashfs alpine_dev=cdrom debug_init=1
 EOF
     
     # Create GRUB configuration (UEFI)
     cat > "${ISO_DIR}/boot/grub/grub.cfg" << 'EOF'
-set timeout=20
 set default=0
+set timeout=3
+
+insmod all_video
+insmod gfxterm
+insmod png
+insmod serial
+
+terminal_input console serial
+terminal_output console serial
+
+serial --unit=0 --speed=115200
 
 menuentry "Custom Alpine Linux" {
-    linux /boot/vmlinuz-lts root=/dev/ram0 console=tty0 console=ttyS0,115200n8 nomodeset quiet modloop=/boot/alpine-custom.squashfs modules=loop,squashfs alpine_dev=loop0
-    initrd /boot/initramfs-lts
+    linux /boot/vmlinuz root=/dev/ram0 console=tty0 console=ttyS0,115200n8 modules=loop,squashfs,sr_mod modloop=/boot/alpine-custom.squashfs alpine_dev=cdrom quiet
+    initrd /boot/initramfs
+}
+
+menuentry "Custom Alpine Linux (Debug Mode)" {
+    linux /boot/vmlinuz root=/dev/ram0 console=tty0 console=ttyS0,115200n8 modules=loop,squashfs,sr_mod modloop=/boot/alpine-custom.squashfs alpine_dev=cdrom debug_init=1
+    initrd /boot/initramfs
 }
 EOF
     
@@ -236,20 +250,15 @@ create_uefi_boot() {
         --output="${ISO_DIR}/EFI/BOOT/BOOTX64.EFI" \
         --locales="" \
         --fonts="" \
+        --modules="part_gpt part_msdos fat iso9660" \
         "boot/grub/grub.cfg=${ISO_DIR}/boot/grub/grub.cfg" || {
             log_error "Failed to create UEFI boot loader"
             exit 1
         }
     
     # Create UEFI boot image
-    fallocate -l 4M "${ISO_DIR}/boot/efiboot.img" || {
+    dd if=/dev/zero of="${ISO_DIR}/boot/efiboot.img" bs=1M count=4 || {
         log_error "Failed to create UEFI boot image"
-        exit 1
-    }
-    
-    # Ensure the file is zeroed
-    truncate -s 4M "${ISO_DIR}/boot/efiboot.img" || {
-        log_error "Failed to zero UEFI boot image"
         exit 1
     }
     
@@ -258,7 +267,7 @@ create_uefi_boot() {
         exit 1
     }
     
-    # Create EFI directory structure in the boot image
+    # Create and copy EFI structure
     LC_ALL=C mmd -i "${ISO_DIR}/boot/efiboot.img" ::/EFI
     LC_ALL=C mmd -i "${ISO_DIR}/boot/efiboot.img" ::/EFI/BOOT
     LC_ALL=C mcopy -i "${ISO_DIR}/boot/efiboot.img" "${ISO_DIR}/EFI/BOOT/BOOTX64.EFI" ::/EFI/BOOT/
@@ -285,6 +294,7 @@ create_iso() {
         -e boot/efiboot.img \
         -no-emul-boot \
         -isohybrid-gpt-basdat \
+        -isohybrid-apm-hfsplus \
         -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
         "${ISO_DIR}/" || {
             log_error "Failed to create ISO"
@@ -292,6 +302,7 @@ create_iso() {
         }
     
     log_success "ISO created successfully: ${OUTPUT_ISO}"
+    ls -lh "${OUTPUT_ISO}"
 }
 
 # Verify ISO
@@ -338,7 +349,9 @@ main() {
     echo
     echo "Next steps:"
     echo "1. Review the log file at: ${LOG_FILE}"
-    echo "2. Test the ISO using QEMU or similar"
+    echo "2. Test the ISO in Hyper-V:"
+    echo "   - For UEFI boot: Enable Secure Boot"
+    echo "   - For BIOS boot: Disable Secure Boot"
     echo "3. The ISO is located at: ${OUTPUT_ISO}"
     echo
 }
