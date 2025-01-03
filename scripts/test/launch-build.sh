@@ -1,11 +1,11 @@
 #!/bin/sh
 set -e
 
-# Build the ISO builder image
-docker build -t iso-builder .
+# First build your imaging service Docker image
+docker build -t imaging-service .
 
-# Run the builder to create ISO
+# Then build the ISO
 docker run --rm --privileged \
     -v "$(pwd)/output:/output" \
-    -v "$(pwd)/ImagingService.dll:/tmp/ImagingService.dll" \
-    iso-builder /usr/local/bin/build-iso.sh
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    alpine:latest /build-scripts/build-iso.sh
