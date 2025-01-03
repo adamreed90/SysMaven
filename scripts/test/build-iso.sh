@@ -5,157 +5,86 @@ echo "Starting ISO build process..."
 
 # Create working directory
 WORK_DIR="/tmp/iso-build"
-mkdir -p "$WORK_DIR"
+ISO_ROOT="$WORK_DIR/iso-root"
+mkdir -p "$ISO_ROOT"
 cd "$WORK_DIR"
 
-# Generate the custom answers file
-cat > "$WORK_DIR/answers" << 'EOF'
-KEYMAPOPTS="us us"
-HOSTNAMEOPTS="-n imaging-system"
-INTERFACESOPTS="auto lo
-iface lo inet loopback
+# Create ISO directory structure
+mkdir -p "$ISO_ROOT"/boot/syslinux
+mkdir -p "$ISO_ROOT"/apks
+mkdir -p "$ISO_ROOT"/opt/imaging-service
 
-auto eth0
-iface eth0 inet dhcp
-"
-TIMEZONEOPTS="-z UTC"
-PROXYOPTS="none"
-APKREPOSOPTS="-1"
-SSHDOPTS="-c openssh"
-NTPOPTS="-c chrony"
-DISKOPTS="-m sys /dev/sda"
+# Install necessary packages for boot
+apk add --no-cache \
+    linux-lts \
+    linux-firmware-none \
+    alpine-base \
+    syslinux \
+    mkinitfs
+
+# Copy boot files
+cp /boot/vmlinuz-lts "$ISO_ROOT"/boot/vmlinuz
+cp /boot/initramfs-lts "$ISO_ROOT"/boot/initfs
+
+# Copy syslinux files
+cp /usr/share/syslinux/isolinux.bin "$ISO_ROOT"/boot/syslinux/
+cp /usr/share/syslinux/ldlinux.c32 "$ISO_ROOT"/boot/syslinux/
+cp /usr/share/syslinux/libcom32.c32 "$ISO_ROOT"/boot/syslinux/
+cp /usr/share/syslinux/libutil.c32 "$ISO_ROOT"/boot/syslinux/
+cp /usr/share/syslinux/menu.c32 "$ISO_ROOT"/boot/syslinux/
+
+# Create syslinux configuration
+cat > "$ISO_ROOT"/boot/syslinux/syslinux.cfg << 'EOF'
+TIMEOUT 20
+PROMPT 1
+DEFAULT imaging
+
+LABEL imaging
+    MENU LABEL Network Imaging System
+    LINUX /boot/vmlinuz
+    APPEND initrd=/boot/initfs modules=loop,squashfs,sd-mod,usb-storage console=tty0 console=ttyS0,115200
 EOF
 
-# Create custom setup script
-cat > "$WORK_DIR/custom-setup.sh" << 'EOF'
+# Create Alpine Linux system structure
+mkdir -p "$ISO_ROOT"/etc/apk
+cp /etc/apk/repositories "$ISO_ROOT"/etc/apk/
+cp -r /etc/apk/keys "$ISO_ROOT"/etc/apk/
+
+# Copy your imaging service
+cp /tmp/ImagingService.dll "$ISO_ROOT"/opt/imaging-service/
+
+# Create init script
+mkdir -p "$ISO_ROOT"/etc/local.d
+cat > "$ISO_ROOT"/etc/local.d/imaging.start << 'EOF'
 #!/bin/sh
+# Start imaging service
+dotnet /opt/imaging-service/ImagingService.dll &
+EOF
+chmod +x "$ISO_ROOT"/etc/local.d/imaging.start
 
-# Create necessary directories
-mkdir -p /mnt/nfs /mnt/image /mnt/target /var/lib/images /var/log/imaging /var/cache/multicast /etc/network-scripts
-mkdir -p /etc/network-imaging /etc/partclone /etc/multicast
-
-# Set up imaging service
-mkdir -p /opt/imaging-service
-cp /tmp/ImagingService.dll /opt/imaging-service/
-
-# Create service user
-adduser -D serviceuser
-
-# Set up logging
-touch /var/log/imaging.log
-chown serviceuser:serviceuser /var/log/imaging.log
-
-# Create systemd service for imaging
-cat > /etc/init.d/imaging-service << 'EOFS'
-#!/sbin/openrc-run
-
-name="imaging-service"
-description="Network Imaging Service"
-command="/usr/bin/dotnet"
-command_args="/opt/imaging-service/ImagingService.dll"
-command_user="serviceuser"
-command_background=true
-pidfile="/run/${RC_SVCNAME}.pid"
-output_log="/var/log/imaging.log"
-error_log="/var/log/imaging.log"
-
-depend() {
-    need net
-    after firewall
-}
-
-start_pre() {
-    checkpath --directory --owner serviceuser:serviceuser --mode 0755 \
-        /var/log/imaging /var/lib/images /var/cache/multicast
-}
-EOFS
-
-chmod +x /etc/init.d/imaging-service
-rc-update add imaging-service default
-
-# Enable required services
-rc-update add networking boot
-rc-update add syslog boot
-rc-update add acpid default
-
-# Set up basic networking
-cat > /etc/network/interfaces << 'EOFN'
+# Create basic system configuration
+mkdir -p "$ISO_ROOT"/etc/network
+cat > "$ISO_ROOT"/etc/network/interfaces << 'EOF'
 auto lo
 iface lo inet loopback
 
 auto eth0
 iface eth0 inet dhcp
-EOFN
-
-EOF
-chmod +x "$WORK_DIR/custom-setup.sh"
-
-# Create package list
-cat > "$WORK_DIR/packages" << 'EOF'
-alpine-base
-openssh
-chrony
-dotnet8-runtime
-bash
-partclone
-parted
-hdparm
-e2fsprogs
-xfsprogs
-ntfs-3g
-dosfstools
-gptfdisk
-mdadm
-lvm2
-cryptsetup
-nfs-utils
-curl
-wget
-rsync
-iftop
-ethtool
-iproute2
-bridge
-iputils
-net-tools
-nmap
-tcpdump
-open-iscsi
-dnsmasq
-wol
-util-linux
-pciutils
-usbutils
-lsscsi
-smartmontools
-dmidecode
-sysstat
-acpi
-procps
-pigz
-zstd
-xz
-syslog-ng
-logrotate
-bash
-grep
-sed
-gawk
-hwids
-efibootmgr
-efivar
-stress-ng
 EOF
 
-echo "Building bootable ISO..."
-alpine-make-vm-image \
-    --image-format iso \
-    --arch x86_64 \
-    --profile virt \
-    --packages "$(cat $WORK_DIR/packages)" \
-    --answer-file "$WORK_DIR/answers" \
-    --script-chroot \
-    --script "$WORK_DIR/custom-setup.sh" \
-    /output/imaging-system.iso
+# Create the ISO
+xorriso -as mkisofs \
+    -b boot/syslinux/isolinux.bin \
+    -c boot/syslinux/boot.cat \
+    -no-emul-boot \
+    -boot-load-size 4 \
+    -boot-info-table \
+    -joliet \
+    -rock \
+    -o /output/imaging-system.iso \
+    "$ISO_ROOT"
+
+# Make the ISO hybrid (bootable from USB)
+isohybrid /output/imaging-system.iso
 
 echo "ISO build complete: /output/imaging-system.iso"
