@@ -1,9 +1,11 @@
-FROM alpine:latest
+FROM mcr.microsoft.com/dotnet/runtime:8.0-alpine
+
+# Add community and testing repositories
+RUN echo "http://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories && \
+    echo "http://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories
 
 # Install required packages
 RUN apk update && apk add --no-cache \
-    # .NET Runtime
-    dotnet8-runtime \
     # Disk imaging and manipulation
     partclone \
     parted \
@@ -24,18 +26,15 @@ RUN apk update && apk add --no-cache \
     iftop \
     ethtool \
     iproute2 \
-    bridge-utils \
+    bridge \
     iputils \
     net-tools \
     nmap \
     tcpdump \
-    iscsi-utils \
-    multicast-tools \
-    dhcp-helper \
+    open-iscsi \
     dnsmasq \
     # Wake-on-LAN
     wol \
-    etherwake \
     # System utilities
     util-linux \
     pciutils \
@@ -58,14 +57,13 @@ RUN apk update && apk add --no-cache \
     bash \
     grep \
     sed \
-    awk \
-    # Hardware detection
+    gawk \
+        # Hardware detection
     hwids \
     # UEFI tools
     efibootmgr \
     efivar \
     # Additional utilities
-    memtester \
     stress-ng \
     && rm -rf /var/cache/apk/*
 
@@ -91,16 +89,6 @@ RUN mkdir -p \
     /etc/partclone \
     /etc/multicast
 
-# Set environment variables
-ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
-ENV PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-# Create necessary device nodes (if needed during runtime)
-# Note: This might need to be done at runtime depending on the use case
-# RUN mknod -m 622 /dev/console c 5 1
-# RUN mknod -m 666 /dev/null c 1 3
-# RUN mknod -m 666 /dev/zero c 1 5
-
 # Set up basic logging configuration
 RUN touch /var/log/imaging.log && \
     chown serviceuser:serviceuser /var/log/imaging.log
@@ -110,6 +98,6 @@ SHELL ["/bin/bash", "-c"]
 CMD ["/bin/bash"]
 
 # Add labels for identification
-LABEL maintainer="project@sysmaven.org" \
+LABEL maintainer="your-email@domain.com" \
       description="Network imaging system based on Alpine Linux" \
       version="1.0"
