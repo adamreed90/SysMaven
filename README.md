@@ -90,4 +90,41 @@ For questions or inquiries, please reach out to:
 - .NET 8+  
 - SQL Server / PostgreSQL  
 
+---
+
+## 📦 **ImagingService Deployment**
+
+The `ImagingService` is a core component of SysMaven that handles the imaging and deployment of systems. It is included in the Dockerfile and can be deployed as part of the SysMaven setup.
+
+### **Dockerfile Configuration**
+
+The `Dockerfile` has been updated to include the `ImagingService`. The relevant steps are:
+
+1. Copy `ImagingService.dll` to `/opt/imaging-service/`:
+   ```dockerfile
+   COPY ImagingService.dll /opt/imaging-service/
+   ```
+
+2. Set the working directory to `/opt/imaging-service/`:
+   ```dockerfile
+   WORKDIR /opt/imaging-service/
+   ```
+
+3. Run the `ImagingService` as the entry point:
+   ```dockerfile
+   ENTRYPOINT ["dotnet", "ImagingService.dll"]
+   ```
+
+### **Building and Running the Docker Image**
+
+1. Build the Docker image:
+   ```bash
+   docker build -t sysmaven:latest .
+   ```
+
+2. Run the Docker container:
+   ```bash
+   docker run -d --name sysmaven -p 8080:80 sysmaven:latest
+   ```
+
 Thank you for exploring **SysMaven**! Let's simplify IT together. 🌟

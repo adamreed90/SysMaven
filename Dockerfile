@@ -93,6 +93,15 @@ RUN mkdir -p \
 RUN touch /var/log/imaging.log && \
     chown serviceuser:serviceuser /var/log/imaging.log
 
+# Copy ImagingService.dll to /opt/imaging-service/
+COPY ImagingService.dll /opt/imaging-service/
+
+# Set the working directory to /opt/imaging-service/
+WORKDIR /opt/imaging-service/
+
+# Run the ImagingService as the entry point
+ENTRYPOINT ["dotnet", "ImagingService.dll"]
+
 # Switch to bash as default shell
 SHELL ["/bin/bash", "-c"]
 CMD ["/bin/bash"]
